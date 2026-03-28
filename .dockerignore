@@ -1,0 +1,17 @@
+.git/
+.gitignore
+.env
+.env.*
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+backend/storage/jobs/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/.mypy_cache/
+secrets/*.json
+!secrets/.gitkeep

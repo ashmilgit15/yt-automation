@@ -1,8 +1,16 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PLACEHOLDER_MARKERS = ("change-me", "replace-with", "<your", "your-")
+
+
+def _contains_placeholder(value: str) -> bool:
+    normalized = value.strip().lower()
+    return not normalized or any(marker in normalized for marker in PLACEHOLDER_MARKERS)
 
 
 class Settings(BaseSettings):
@@ -16,18 +24,14 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development")
     debug: bool = Field(default=True)
     api_v1_prefix: str = Field(default="/api/v1")
-    database_url: str = Field(
-        default="postgresql+psycopg://postgres:postgres@postgres:5432/video_factory"
-    )
+    database_url: str = Field()
     redis_url: str = Field(default="redis://redis:6379/0")
     frontend_origin: str = Field(default="http://localhost:3000")
     backend_public_url: str = Field(default="http://localhost:8000")
     allowed_hosts: str = Field(default="localhost,127.0.0.1,testserver")
-    session_secret: str = Field(
-        default="change-me-super-long-session-secret-for-local-development"
-    )
+    session_secret: str = Field()
     operator_username: str = Field(default="operator")
-    operator_password: str = Field(default="change-me-strong-password")
+    operator_password: str = Field()
     max_request_body_bytes: int = Field(default=65536)
     default_jobs_page_size: int = Field(default=24)
 
@@ -60,6 +64,22 @@ class Settings(BaseSettings):
     youtube_default_category_id: str = Field(default="27")
     youtube_refresh_token: str | None = Field(default=None)
     youtube_channel_label: str = Field(default="default")
+
+    @model_validator(mode="after")
+    def validate_sensitive_settings(self):
+        if _contains_placeholder(self.database_url):
+            raise ValueError(
+                "DATABASE_URL must be set in .env with a real PostgreSQL password."
+            )
+        if _contains_placeholder(self.session_secret):
+            raise ValueError(
+                "SESSION_SECRET must be set in .env to a unique random value."
+            )
+        if _contains_placeholder(self.operator_password):
+            raise ValueError(
+                "OPERATOR_PASSWORD must be set in .env to a non-placeholder value."
+            )
+        return self
 
     def allowed_hosts_list(self) -> list[str]:
         return [item.strip() for item in self.allowed_hosts.split(",") if item.strip()]

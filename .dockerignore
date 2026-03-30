@@ -13,5 +13,5 @@ backend/storage/jobs/
 backend/.pytest_cache/
 backend/.ruff_cache/
 backend/.mypy_cache/
-secrets/*.json
+secrets/*
 !secrets/.gitkeep

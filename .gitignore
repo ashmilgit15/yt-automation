@@ -1,4 +1,9 @@
 .env
+.env.*
+!.env.example
+.curl-cookies.txt
+*.log
+*.err.log
 *.pyc
 __pycache__/
 .pytest_cache/
@@ -9,6 +14,8 @@ venv/
 node_modules/
 frontend/node_modules/
 frontend/.next/
+secrets/*
+!secrets/.gitkeep
 backend/storage/jobs/*
 !backend/storage/jobs/.gitkeep
 backend/assets/*.mp3

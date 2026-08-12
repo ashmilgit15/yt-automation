@@ -1,5 +1,5 @@
-import { DashboardShell } from '@/components/DashboardShell';
+import { TranscriptionDashboard } from '@/components/TranscriptionDashboard';
 
 export default function HomePage() {
-  return <DashboardShell mode="dashboard" />;
+  return <TranscriptionDashboard />;
 }

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     groq_whisper_model: str = Field(default="whisper-large-v3-turbo")
     pexels_api_key: str | None = Field(default=None)
 
+    whisper_model: str = Field(default="small")
+    whisper_device: str = Field(default="auto")
+    whisper_compute_type: str = Field(default="int8_float16")
+    transcription_max_playlist_items: int = Field(default=200, ge=1, le=200)
+
     quality_gate_threshold: int = Field(default=7)
     kokoro_voice: str = Field(default="af_heart")
     kokoro_language_code: str = Field(default="a")
@@ -86,6 +91,7 @@ class Settings(BaseSettings):
 
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
 
 
 @lru_cache(maxsize=1)

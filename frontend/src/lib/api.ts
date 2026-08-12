@@ -2,6 +2,7 @@ import axios from 'axios';
 
 import type { OperatorLoginPayload, OperatorSession } from '@/types/auth';
 import type { YouTubeConnectionStatus } from '@/types/integrations';
+import type { PlaylistAnalysis, PlaylistBatch, TranscriptJob } from '@/types/transcripts';
 import type { BulkCreateJobPayload, BulkJobCreateResponse, CreateJobPayload, JobCollectionResponse, SourceRemixJobCreatePayload, VideoJobDetail } from '@/types/jobs';
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000/api/v1';
@@ -208,4 +209,44 @@ export function buildYouTubeOauthStartUrl(channelLabel = 'default'): string {
   const url = new URL(`${baseURL}/integrations/youtube/oauth/start`);
   url.searchParams.set('channel_label', channelLabel);
   return url.toString();
+}
+
+export async function analysePlaylist(playlist_url: string): Promise<PlaylistAnalysis> {
+  try {
+    const response = await api.post<PlaylistAnalysis>('/playlists/analyze', { playlist_url });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function createPlaylistBatch(playlist_url: string, selected_video_ids: string[]): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>('/playlists', {
+      playlist_url,
+      selected_video_ids,
+      authorised_to_process: true
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function fetchPlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  const response = await api.get<PlaylistBatch>(`/playlists/${batchId}`);
+  return response.data;
+}
+
+export async function retryTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/retry`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export function transcriptExportUrl(jobId: string, format: 'txt' | 'srt' | 'vtt' | 'json'): string {
+  return `${baseURL}/transcripts/${jobId}/export/${format}`;
 }

@@ -1,0 +1,20 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ffmpeg fonts-montserrat fonts-dejavu-core gcc \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3 /usr/local/bin/python
+
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN python -m pip install --upgrade pip && python -m pip install -r /tmp/requirements.txt
+
+COPY backend /app/backend
+RUN mkdir -p /app/backend/storage/jobs /app/backend/assets /app/secrets

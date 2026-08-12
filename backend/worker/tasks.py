@@ -15,6 +15,8 @@ from backend.services.publisher import PublisherService
 from backend.services.researcher import ResearcherService
 from backend.services.source_remix import SourceRemixService
 from backend.services.transcriber import TranscriberService
+from backend.models.transcription_models import PlaylistBatch, PlaylistStatus, TranscriptJob, TranscriptStatus
+from backend.services.local_transcriber import LocalWhisperService
 from backend.services.utils import stacktrace_from_exception
 from backend.services.visual_curator import VisualCuratorService
 from backend.worker.celery_app import celery_app
@@ -56,6 +58,76 @@ def _fail_job(db: Session, job: VideoJob, exc: Exception) -> None:
     job.error_log = stacktrace_from_exception(exc)
     db.add(job)
     db.commit()
+
+
+def _refresh_playlist_progress(db: Session, batch: PlaylistBatch) -> None:
+    jobs = list(
+        db.query(TranscriptJob).filter(TranscriptJob.playlist_batch_id == batch.id).all()
+    )
+    batch.completed_videos = sum(job.status == TranscriptStatus.COMPLETED for job in jobs)
+    batch.failed_videos = sum(job.status == TranscriptStatus.FAILED for job in jobs)
+    active = any(job.status in {TranscriptStatus.ACQUIRING, TranscriptStatus.TRANSCRIBING, TranscriptStatus.EXPORTING} for job in jobs)
+    pending = any(job.status == TranscriptStatus.PENDING for job in jobs)
+    if batch.completed_videos + batch.failed_videos == batch.total_videos:
+        batch.status = PlaylistStatus.PARTIAL if batch.failed_videos else PlaylistStatus.COMPLETED
+    elif active or pending:
+        batch.status = PlaylistStatus.PROCESSING
+    db.add(batch)
+    db.commit()
+
+
+@celery_app.task(bind=True, name="backend.worker.tasks.transcribe_playlist_item")
+def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        job = db.get(TranscriptJob, UUID(transcript_job_id))
+        if not job:
+            raise RuntimeError("Transcript job was not found.")
+        if job.status not in {TranscriptStatus.PENDING, TranscriptStatus.FAILED}:
+            return {"job_id": transcript_job_id, "status": job.status.value}
+        batch = db.get(PlaylistBatch, job.playlist_batch_id)
+        if not batch:
+            raise RuntimeError("Playlist batch was not found.")
+        worker = LocalWhisperService()
+        try:
+            job.status = TranscriptStatus.ACQUIRING
+            job.progress = 10
+            job.error_log = None
+            db.add(job)
+            db.commit()
+            audio_path = worker.acquire_audio(job_id=str(job.id), video_url=job.video_url)
+
+            job.status = TranscriptStatus.TRANSCRIBING
+            job.progress = 45
+            db.add(job)
+            db.commit()
+            result = worker.transcribe(job_id=str(job.id), audio_path=audio_path)
+
+            job.status = TranscriptStatus.EXPORTING
+            job.progress = 90
+            job.language = result["language"]
+            job.transcript_text = result["transcript_text"]
+            job.segments_json = result["segments"]
+            job.artifact_paths = result["artifact_paths"]
+            db.add(job)
+            db.commit()
+
+            job.status = TranscriptStatus.COMPLETED
+            job.progress = 100
+            db.add(job)
+            db.commit()
+            _refresh_playlist_progress(db, batch)
+            return {"job_id": transcript_job_id, "status": job.status.value}
+        except Exception as exc:
+            job.status = TranscriptStatus.FAILED
+            job.progress = 0
+            job.error_log = stacktrace_from_exception(exc)
+            db.add(job)
+            db.commit()
+            _refresh_playlist_progress(db, batch)
+            raise
+    finally:
+        db.close()
 
 
 @celery_app.task(bind=True, name="backend.worker.tasks.generate_video_pipeline")

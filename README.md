@@ -1,6 +1,8 @@
-# YouTube Automation Factory
+# Bulk YouTube Transcriber
 
-Full-stack video automation platform with a Next.js dashboard, FastAPI API, Celery workers, Redis queueing, PostgreSQL persistence, and FFmpeg-based media processing.
+An authorised-use bulk transcription application with a Next.js dashboard, FastAPI API, Celery workers, Redis queueing, PostgreSQL persistence, and local `faster-whisper` transcription. Paste a playlist URL, select up to 200 videos that you own or are authorised to process, and download TXT, SRT, VTT, or JSON results.
+
+> This project is for videos you own or are otherwise authorised to obtain and process. Playlist metadata and audio acquisition use local `yt-dlp`; the worker is deliberately separate from the website so it can run locally on your own GPU.
 
 > Runtime secrets are intentionally kept out of Git. Keep `.env` and anything inside `secrets/` local-only.
 
@@ -19,10 +21,26 @@ Full-stack video automation platform with a Next.js dashboard, FastAPI API, Cele
 - [Troubleshooting](#troubleshooting)
 - [Security Notes](#security-notes)
 
+## Bulk transcription workflow
+
+1. Sign in as the operator.
+2. Paste a YouTube playlist URL and click **Analyse playlist**.
+3. Select the videos you are authorised to process and confirm the attestation.
+4. The worker downloads one audio source at a time, runs local `faster-whisper`, and writes TXT/SRT/VTT/JSON exports.
+5. The dashboard polls live progress and presents exports when each item completes.
+
+Playlist analysis and authorised audio acquisition both use local `yt-dlp`, so no API key is required for bulk transcription. No Groq, Gemini, Firecrawl, Pexels, OpenRouter, or YouTube Data API key is required.
+
+For an RTX 3050 6GB, start with `WHISPER_MODEL=small`. Run the GPU worker with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
 ## What This Project Includes
 
-- `frontend/`: Next.js 15 dashboard for creating, reviewing, and monitoring jobs
-- `backend/`: FastAPI API, SQLAlchemy models, Celery workers, AI/media services, and YouTube publishing logic
+- `frontend/`: Next.js 15 playlist-selection and transcript-results dashboard
+- `backend/`: FastAPI API, SQLAlchemy models, Celery workers, local Whisper service, and YouTube playlist metadata service
 - `docker-compose.yml`: local development stack for Postgres, Redis, API, worker, and frontend
 - `secrets/`: local-only folder for Google OAuth files and similar sensitive assets
 
@@ -32,9 +50,8 @@ Full-stack video automation platform with a Next.js dashboard, FastAPI API, Cele
 2. Clone this repository.
 3. Copy `.env.example` to `.env`.
 4. Replace every value that starts with `replace-with-`.
-5. Create `secrets/client_secrets.json` from your Google Cloud OAuth download.
-6. Run `docker compose up --build`.
-7. Open `http://localhost:3000` and sign in with your operator account.
+5. Run the GPU-enabled Docker command below.
+6. Open `http://localhost:3000` and sign in with your operator account.
 
 The application now refuses to start if important secrets still contain placeholder values. That is intentional.
 
@@ -91,53 +108,12 @@ Important:
 - Do not commit `.env`.
 - `.env` is already ignored by Git.
 
-## Step 3: Add Your Google OAuth File
-
-If you want YouTube connection and publishing, create a Google OAuth Web Application client.
-
-1. Open the Google Cloud Console.
-2. Create or select a project.
-3. Enable the YouTube Data API v3.
-4. Configure the OAuth consent screen.
-5. Create an OAuth client of type `Web application`.
-6. Add this redirect URI:
-
-```text
-http://localhost:8000/api/v1/integrations/youtube/oauth/callback
-```
-
-7. Add this JavaScript origin:
-
-```text
-http://localhost:3000
-```
-
-8. Download the JSON credentials file.
-9. Save it locally as `secrets/client_secrets.json`.
-
-Create the folder if it does not exist:
-
-```bash
-mkdir -p secrets
-```
-
-PowerShell alternative:
-
-```powershell
-New-Item -ItemType Directory -Force secrets
-```
-
-Important:
-
-- `secrets/` is local-only and ignored by Git.
-- Never paste the JSON contents into source files.
-
-## Step 4: Start The App With Docker
+## Step 3: Start The App With Docker
 
 From the project root, run:
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
 
 First boot can take a while because Docker installs Python packages, Node packages, and FFmpeg.
@@ -148,7 +124,7 @@ When everything is healthy, these URLs should work:
 - Backend API: `http://localhost:8000`
 - Health check: `http://localhost:8000/health`
 
-## Step 5: Sign In And Use The Dashboard
+## Step 4: Sign In And Use The Dashboard
 
 1. Open `http://localhost:3000`.
 2. Sign in with `OPERATOR_USERNAME` and `OPERATOR_PASSWORD` from `.env`.

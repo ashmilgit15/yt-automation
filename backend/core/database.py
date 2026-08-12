@@ -29,5 +29,6 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     from backend.models.db_models import VideoJob, YouTubeCredential  # noqa: F401
+    from backend.models.transcription_models import PlaylistBatch, TranscriptJob  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

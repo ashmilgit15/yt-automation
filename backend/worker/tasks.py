@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 from celery import Task
 from sqlalchemy.orm import Session

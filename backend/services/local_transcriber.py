@@ -54,6 +54,18 @@ class LocalWhisperService:
                     result.stderr or result.stdout or "yt-dlp did not create an audio file."
                 ).strip()
                 raise RuntimeError(f"Audio acquisition failed: {message[-900:]}")
+
+        # Validate that the downloaded audio is not a corrupt/empty stub
+        min_valid_size = 10_000  # 10 KB minimum for valid audio
+        actual_size = audio_path.stat().st_size
+        if actual_size < min_valid_size:
+            audio_path.unlink(missing_ok=True)
+            stderr_hint = (result.stderr or "")[-500:].strip()
+            raise RuntimeError(
+                f"Audio acquisition produced a corrupt file ({actual_size} bytes). "
+                f"The video may be unavailable, age-restricted, or region-locked. "
+                f"yt-dlp stderr: {stderr_hint or 'no output'}"
+            )
         return audio_path
 
     def _get_or_create_model(self) -> Any:

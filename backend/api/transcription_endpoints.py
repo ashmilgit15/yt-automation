@@ -195,6 +195,24 @@ def create_playlist_batch(
     return _batch_read(batch, jobs)
 
 
+@router.get("/transcripts/recent", response_model=list[TranscriptJobRead])
+def list_recent_transcripts(
+    limit: int = 30,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+    __: None = Depends(rate_limit("transcripts-recent", 120, 60)),
+) -> list[TranscriptJobRead]:
+    """Lists all recent transcript jobs (standalone and batch items) for history tracking."""
+    jobs = list(
+        db.scalars(
+            select(TranscriptJob)
+            .order_by(desc(TranscriptJob.created_at))
+            .limit(min(max(limit, 1), 100))
+        )
+    )
+    return [_job_read(job, include_transcript=False) for job in jobs]
+
+
 @router.post("/transcripts/single", response_model=TranscriptJobRead, status_code=status.HTTP_202_ACCEPTED)
 def create_single_transcript(
     payload: SingleVideoCreateRequest,
@@ -204,17 +222,37 @@ def create_single_transcript(
 ) -> TranscriptJobRead:
     """Directly transcribes a single YouTube video URL without requiring a playlist."""
     video_url = payload.video_url.strip()
+    title = "YouTube Video"
     video_id = "video"
-    if "watch?v=" in video_url:
-        video_id = video_url.split("watch?v=")[1].split("&")[0]
-    elif "youtu.be/" in video_url:
-        video_id = video_url.split("youtu.be/")[1].split("?")[0]
+    channel_title = None
+    duration_seconds = None
+    thumbnail_url = None
+
+    try:
+        analysis = YouTubePlaylistService().analyse(video_url)
+        if analysis and analysis.get("videos"):
+            first = analysis["videos"][0]
+            if isinstance(first, dict):
+                video_id = str(first.get("video_id") or video_id)
+                title = str(first.get("title") or title)
+                channel_title = str(first.get("channel_title")) if first.get("channel_title") else None
+                duration_seconds = first.get("duration_seconds")
+                thumbnail_url = first.get("thumbnail_url")
+    except Exception:
+        if "watch?v=" in video_url:
+            video_id = video_url.split("watch?v=")[1].split("&")[0]
+        elif "youtu.be/" in video_url:
+            video_id = video_url.split("youtu.be/")[1].split("?")[0]
+        title = f"YouTube Video ({video_id})"
 
     job = TranscriptJob(
         playlist_batch_id=None,
         video_id=video_id,
         video_url=video_url,
-        title=f"YouTube Video ({video_id})",
+        title=title,
+        channel_title=channel_title,
+        duration_seconds=duration_seconds,
+        thumbnail_url=thumbnail_url,
         engine=payload.engine or "local_whisper",
         language=payload.language_code or "unknown",
         mode=payload.mode or "transcribe",

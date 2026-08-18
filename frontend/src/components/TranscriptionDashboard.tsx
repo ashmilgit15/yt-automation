@@ -35,6 +35,8 @@ import {
   fetchOperatorSession,
   fetchPlaylistBatch,
   fetchPlaylistBatches,
+  fetchRecentTranscriptJobs,
+  fetchTranscriptJob,
   retryTranscriptJob,
   transcriptExportUrl
 } from '@/lib/api';
@@ -92,12 +94,41 @@ export function TranscriptionDashboard() {
 
   // Single Video State
   const [singleVideoUrl, setSingleVideoUrl] = useState('');
-  const [singleJob, setSingleJob] = useState<TranscriptJob | null>(null);
+  const [singleJobId, setSingleJobId] = useState<string | null>(null);
+
+  // History Sub-tab State
+  const [historySubTab, setHistorySubTab] = useState<'videos' | 'batches'>('videos');
 
   // Transcript Preview Modal State
   const [previewJob, setPreviewJob] = useState<TranscriptJob | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [copied, setCopied] = useState(false);
+
+  // Restore active sessions from localStorage on client mount
+  useEffect(() => {
+    try {
+      const savedBatchId = localStorage.getItem('yt_active_batch_id');
+      if (savedBatchId) setBatchId(savedBatchId);
+
+      const savedSingleJobId = localStorage.getItem('yt_active_single_job_id');
+      if (savedSingleJobId) setSingleJobId(savedSingleJobId);
+    } catch {
+      // Ignore localStorage errors
+    }
+  }, []);
+
+  // Save active IDs to localStorage
+  useEffect(() => {
+    if (batchId) {
+      localStorage.setItem('yt_active_batch_id', batchId);
+    }
+  }, [batchId]);
+
+  useEffect(() => {
+    if (singleJobId) {
+      localStorage.setItem('yt_active_single_job_id', singleJobId);
+    }
+  }, [singleJobId]);
 
   // Live Batch Polling
   const { data: batch, mutate: mutateBatch } = useSWR<PlaylistBatch>(
@@ -105,15 +136,33 @@ export function TranscriptionDashboard() {
     () => fetchPlaylistBatch(batchId as string),
     {
       refreshInterval: (latest) =>
-        latest?.jobs.some((job) => ACTIVE_STATUSES.has(job.status)) ? 2500 : 0,
-      revalidateOnFocus: false
+        latest?.jobs.some((job) => ACTIVE_STATUSES.has(job.status)) ? 2000 : 0,
+      revalidateOnFocus: true
+    }
+  );
+
+  // Live Single Video Polling
+  const { data: polledSingleJob, mutate: mutateSingleJob } = useSWR<TranscriptJob>(
+    authenticated && singleJobId ? ['transcript-job', singleJobId] : null,
+    () => fetchTranscriptJob(singleJobId as string),
+    {
+      refreshInterval: (latest) =>
+        latest && ACTIVE_STATUSES.has(latest.status) ? 1200 : 0,
+      revalidateOnFocus: true
     }
   );
 
   // Historical Batches
   const { data: batchHistory, mutate: mutateHistory } = useSWR<PlaylistBatchSummary[]>(
-    authenticated && activeTab === 'history' ? 'playlist-batches-history' : null,
-    () => fetchPlaylistBatches(20),
+    authenticated && activeTab === 'history' && historySubTab === 'batches' ? 'playlist-batches-history' : null,
+    () => fetchPlaylistBatches(30),
+    { revalidateOnFocus: true }
+  );
+
+  // Historical Single & Batch Transcripts
+  const { data: recentJobs, mutate: mutateRecentJobs } = useSWR<TranscriptJob[]>(
+    authenticated && activeTab === 'history' && historySubTab === 'videos' ? 'recent-transcripts-history' : null,
+    () => fetchRecentTranscriptJobs(50),
     { revalidateOnFocus: true }
   );
 
@@ -162,6 +211,7 @@ export function TranscriptionDashboard() {
           mode: sarvamMode
         });
         setBatchId(result.id);
+        localStorage.setItem('yt_active_batch_id', result.id);
         setMessage({
           text: `Queued ${result.total_videos} videos with ${engine.toUpperCase()} engine.`,
           type: 'success'
@@ -190,7 +240,9 @@ export function TranscriptionDashboard() {
           language_code: languageCode,
           mode: sarvamMode
         });
-        setSingleJob(job);
+        setSingleJobId(job.id);
+        localStorage.setItem('yt_active_single_job_id', job.id);
+        await mutateSingleJob();
         setMessage({
           text: `Single video queued for transcription with ${engine.toUpperCase()} engine!`,
           type: 'success'
@@ -211,9 +263,8 @@ export function TranscriptionDashboard() {
     try {
       await retryTranscriptJob(jobId);
       await mutateBatch();
-      if (singleJob && singleJob.id === jobId) {
-        setSingleJob({ ...singleJob, status: 'PENDING', progress: 0 });
-      }
+      await mutateSingleJob();
+      await mutateRecentJobs();
     } catch (error) {
       setMessage({
         text: error instanceof Error ? error.message : 'Unable to retry this transcript.',
@@ -665,13 +716,25 @@ export function TranscriptionDashboard() {
                   </span>
                 </label>
 
-                {singleJob ? (
+                {polledSingleJob ? (
                   <div className="mt-6 border-t border-white/10 pt-4">
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
-                      Current Task
-                    </h4>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                        <Sparkles className="h-3.5 w-3.5" /> Active Single Video Task
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSingleJobId(null);
+                          localStorage.removeItem('yt_active_single_job_id');
+                        }}
+                        className="text-xs text-slate-400 hover:text-slate-200 transition"
+                      >
+                        Clear Task
+                      </button>
+                    </div>
                     <TranscriptRow
-                      job={singleJob}
+                      job={polledSingleJob}
                       onRetry={retry}
                       onPreview={(j) => setPreviewJob(j)}
                     />
@@ -680,69 +743,128 @@ export function TranscriptionDashboard() {
               </section>
             ) : null}
 
-            {/* TAB 3: BATCH HISTORY */}
+            {/* TAB 3: BATCH & VIDEO HISTORY */}
             {activeTab === 'history' ? (
               <section className="rounded-3xl border border-white/10 bg-slate-900/60 p-6 shadow-xl backdrop-blur-md">
-                <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
                   <div>
                     <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                      <History className="h-4 w-4 text-cyan-400" /> Recent Transcription Batches
+                      <History className="h-4 w-4 text-cyan-400" /> Transcription History
                     </h3>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Select any batch to restore its live view or download previous subtitle exports.
+                      View all previously transcribed single videos and playlist batches.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void mutateHistory()}
-                    className="rounded-xl border border-white/10 bg-slate-950/60 px-3 py-1.5 text-xs text-slate-300 hover:text-white"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  </button>
+
+                  <div className="flex items-center gap-2">
+                    {/* Sub-tab Switcher */}
+                    <div className="inline-flex rounded-xl border border-white/10 bg-slate-950/80 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setHistorySubTab('videos')}
+                        className={`rounded-lg px-3 py-1 text-xs font-semibold transition ${
+                          historySubTab === 'videos'
+                            ? 'bg-cyan-500 text-slate-950'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Single Videos ({recentJobs?.length ?? 0})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHistorySubTab('batches')}
+                        className={`rounded-lg px-3 py-1 text-xs font-semibold transition ${
+                          historySubTab === 'batches'
+                            ? 'bg-cyan-500 text-slate-950'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Playlist Batches ({batchHistory?.length ?? 0})
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void mutateHistory();
+                        void mutateRecentJobs();
+                      }}
+                      className="rounded-xl border border-white/10 bg-slate-950/60 p-2 text-slate-300 hover:text-white"
+                      title="Refresh History"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="mt-4 space-y-2.5">
-                  {batchHistory && batchHistory.length > 0 ? (
-                    batchHistory.map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-white/5 bg-slate-950/50 p-4 hover:border-cyan-500/30 transition"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-sm text-white truncate">
-                              {item.title || 'Untitled Batch'}
-                            </span>
-                            <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-slate-300 font-mono">
-                              {item.engine?.toUpperCase() || 'LOCAL_WHISPER'}
-                            </span>
+                {/* Subtab 1: Recent Single Videos */}
+                {historySubTab === 'videos' ? (
+                  <div className="mt-4 space-y-2.5">
+                    {recentJobs && recentJobs.length > 0 ? (
+                      recentJobs.map((job) => (
+                        <TranscriptRow
+                          key={job.id}
+                          job={job}
+                          onRetry={retry}
+                          onPreview={(j) => setPreviewJob(j)}
+                        />
+                      ))
+                    ) : (
+                      <p className="text-center py-8 text-xs text-slate-500">
+                        No previous single video transcriptions found.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+
+                {/* Subtab 2: Playlist Batches */}
+                {historySubTab === 'batches' ? (
+                  <div className="mt-4 space-y-2.5">
+                    {batchHistory && batchHistory.length > 0 ? (
+                      batchHistory.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-white/5 bg-slate-950/50 p-4 hover:border-cyan-500/30 transition"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-sm text-white truncate">
+                                {item.title || 'Untitled Batch'}
+                              </span>
+                              <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-slate-300 font-mono">
+                                {item.engine?.toUpperCase() || 'LOCAL_WHISPER'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-400 mt-1">
+                              {item.completed_videos} / {item.total_videos} videos completed · Created on{' '}
+                              {new Date(item.created_at).toLocaleDateString()}
+                            </p>
                           </div>
-                          <p className="text-xs text-slate-400 mt-1">
-                            {item.completed_videos} / {item.total_videos} videos completed · Created on{' '}
-                            {new Date(item.created_at).toLocaleDateString()}
-                          </p>
+                          <div className="flex items-center gap-3">
+                            <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle(item.status as any)}`}>
+                              {item.status}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBatchId(item.id);
+                                localStorage.setItem('yt_active_batch_id', item.id);
+                                setActiveTab('playlist');
+                              }}
+                              className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition"
+                            >
+                              Open Batch
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle(item.status as any)}`}>
-                            {item.status}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setBatchId(item.id);
-                              setActiveTab('playlist');
-                            }}
-                            className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition"
-                          >
-                            Open Batch
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-center py-8 text-xs text-slate-500">No previous batches found.</p>
-                  )}
-                </div>
+                      ))
+                    ) : (
+                      <p className="text-center py-8 text-xs text-slate-500">
+                        No previous batches found.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
               </section>
             ) : null}
           </div>

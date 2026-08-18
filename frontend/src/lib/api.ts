@@ -279,6 +279,13 @@ export async function fetchTranscriptJob(jobId: string): Promise<TranscriptJob> 
   return response.data;
 }
 
+export async function fetchRecentTranscriptJobs(limit = 30): Promise<TranscriptJob[]> {
+  const response = await api.get<TranscriptJob[]>('/transcripts/recent', {
+    params: { limit }
+  });
+  return response.data;
+}
+
 export async function retryTranscriptJob(jobId: string): Promise<TranscriptJob> {
   try {
     const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/retry`);

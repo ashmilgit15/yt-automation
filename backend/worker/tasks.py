@@ -225,14 +225,33 @@ def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, An
             return {"job_id": transcript_job_id, "status": job.status.value}
         except Exception as exc:
             if not _is_stopped():
-                job.status = TranscriptStatus.FAILED
-                job.progress = 0
-                job.stage_detail = f"Failed: {str(exc)[:120]}"
-                job.error_log = stacktrace_from_exception(exc)
-                db.add(job)
-                db.commit()
-                if batch:
-                    _refresh_playlist_progress(db, batch)
+                current_retries = getattr(self.request, "retries", 0)
+                max_auto_retries = 3
+                if current_retries < max_auto_retries:
+                    backoff_seconds = (2 ** current_retries) * 5  # 5s, 10s, 20s
+                    job.status = TranscriptStatus.PENDING
+                    job.progress = 0
+                    job.stage_detail = (
+                        f"Temporary issue ({str(exc)[:50]}). "
+                        f"Auto-retrying ({current_retries + 1}/{max_auto_retries}) in {backoff_seconds}s..."
+                    )
+                    db.add(job)
+                    db.commit()
+                    if batch:
+                        _refresh_playlist_progress(db, batch)
+                    logger.warning(
+                        f"[Job {transcript_job_id}] Auto-retrying task (attempt {current_retries + 1}/{max_auto_retries}) in {backoff_seconds}s due to: {exc}"
+                    )
+                    raise self.retry(exc=exc, countdown=backoff_seconds, max_retries=max_auto_retries)
+                else:
+                    job.status = TranscriptStatus.FAILED
+                    job.progress = 0
+                    job.stage_detail = f"Failed after {max_auto_retries} attempts: {str(exc)[:100]}"
+                    job.error_log = stacktrace_from_exception(exc)
+                    db.add(job)
+                    db.commit()
+                    if batch:
+                        _refresh_playlist_progress(db, batch)
             raise
     finally:
         db.close()

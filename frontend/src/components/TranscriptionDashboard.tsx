@@ -54,6 +54,7 @@ import {
   pauseTranscriptJob,
   resumePlaylistBatch,
   resumeTranscriptJob,
+  retryFailedPlaylistBatch,
   retryTranscriptJob,
   runAiCleaner,
   runAiSummarizer,
@@ -370,6 +371,19 @@ export function TranscriptionDashboard() {
       await mutateBatch();
     } catch (error) {
       setMessage({ text: error instanceof Error ? error.message : 'Cancel batch failed.', type: 'error' });
+    }
+  };
+
+  const handleRetryFailedBatch = async (bId: string) => {
+    try {
+      await retryFailedPlaylistBatch(bId);
+      await mutateBatch();
+      if (activeTab === 'history') {
+        await mutateHistory();
+      }
+      setMessage({ text: 'All failed videos re-queued for transcription!', type: 'success' });
+    } catch (error) {
+      setMessage({ text: error instanceof Error ? error.message : 'Retry failed videos failed.', type: 'error' });
     }
   };
 
@@ -836,6 +850,18 @@ export function TranscriptionDashboard() {
                           <span>📦 Download ZIP</span>
                         </button>
 
+                        {batch.failed_videos > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRetryFailedBatch(batch.id)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 transition shadow-sm"
+                            title="Automatically Retry All Failed Videos in this Batch"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            <span>Retry Failed ({batch.failed_videos})</span>
+                          </button>
+                        ) : null}
+
                         {batch.status === 'PROCESSING' || batch.status === 'QUEUED' ? (
                           <button
                             type="button"
@@ -1103,6 +1129,17 @@ export function TranscriptionDashboard() {
                             <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle(item.status as any)}`}>
                               {item.status}
                             </span>
+                            {item.failed_videos > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => handleRetryFailedBatch(item.id)}
+                                className="inline-flex items-center gap-1 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 transition"
+                                title="Retry Failed Videos in this Batch"
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                <span>Retry ({item.failed_videos})</span>
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => downloadPlaylistBatchZip(item.id, item.title)}

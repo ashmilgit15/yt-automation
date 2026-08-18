@@ -41,6 +41,10 @@ def build_srt(segments: list[dict[str, Any]]) -> str:
     for segment in segments:
         if not isinstance(segment, dict):
             continue
+        text = str(segment.get("text", "")).strip()
+        if not text:
+            continue
+
         start_val = segment.get("start")
         try:
             start_num = float(start_val) if start_val is not None else 0.0
@@ -58,7 +62,6 @@ def build_srt(segments: list[dict[str, Any]]) -> str:
 
         start_str = format_timestamp(start_num, separator=",")
         end_str = format_timestamp(end_num, separator=",")
-        text = str(segment.get("text", "")).strip()
 
         lines.append(str(sub_idx))
         lines.append(f"{start_str} --> {end_str}")
@@ -74,6 +77,10 @@ def build_vtt(segments: list[dict[str, Any]]) -> str:
     for segment in segments:
         if not isinstance(segment, dict):
             continue
+        text = str(segment.get("text", "")).strip()
+        if not text:
+            continue
+
         start_val = segment.get("start")
         try:
             start_num = float(start_val) if start_val is not None else 0.0
@@ -91,7 +98,6 @@ def build_vtt(segments: list[dict[str, Any]]) -> str:
 
         start_str = format_timestamp(start_num, separator=".")
         end_str = format_timestamp(end_num, separator=".")
-        text = str(segment.get("text", "")).strip()
 
         lines.append(f"{start_str} --> {end_str}")
         lines.append(text)

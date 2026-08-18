@@ -421,6 +421,37 @@ def cancel_playlist_batch(
     return _batch_read(batch, jobs)
 
 
+@router.post("/playlists/{batch_id}/retry-failed", response_model=PlaylistBatchRead, status_code=status.HTTP_202_ACCEPTED)
+def retry_failed_playlist_batch_items(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> PlaylistBatchRead:
+    """Retries all failed video transcription jobs in the specified playlist batch."""
+    batch, jobs = _load_batch(db, batch_id)
+    failed_jobs = [job for job in jobs if job.status == TranscriptStatus.FAILED]
+
+    if not failed_jobs:
+        return _batch_read(batch, jobs)
+
+    batch.status = PlaylistStatus.PROCESSING
+    batch.failed_videos = max(0, batch.failed_videos - len(failed_jobs))
+
+    for job in failed_jobs:
+        job.status = TranscriptStatus.PENDING
+        job.progress = 0
+        job.stage_detail = "Queued for automatic retry..."
+        job.error_log = None
+        db.add(job)
+        transcribe_playlist_item.delay(str(job.id))
+
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return _batch_read(batch, jobs)
+
+
+
 # --- ON-DEMAND AI AGENT ENDPOINTS ---
 
 @router.post("/transcripts/{job_id}/run-cleaner", response_model=TranscriptJobRead, status_code=status.HTTP_202_ACCEPTED)
@@ -562,7 +593,8 @@ def export_playlist_zip(
     def _sanitize(text: str) -> str:
         s = re.sub(r'[\x00-\x1f\x7f\\/*?:"<>|]', "", text or "")
         s = re.sub(r"\s+", " ", s).strip(". ")
-        return s[:90] if s else "video"
+        s = s[:90].rstrip(". ")
+        return s if s else "video"
 
     def _has_job_content(j: TranscriptJob) -> bool:
         if (
@@ -598,13 +630,18 @@ def export_playlist_zip(
                 (master_summary.strip() + "\n").encode("utf-8"),
             )
 
+        used_bases: set[str] = set()
         for idx, job in enumerate(jobs):
             if not _has_job_content(job):
                 continue
 
-            pos_num = (job.position + 1) if job.position is not None else (idx + 1)
+            pos_num = (job.position + 1) if (job.position is not None and job.position >= 0) else (idx + 1)
             safe_title = _sanitize(job.title or job.video_id)
-            file_base = f"{pos_num:02d} - {safe_title}"
+            base_candidate = f"{pos_num:02d} - {safe_title}"
+            file_base = base_candidate
+            if file_base in used_bases:
+                file_base = f"{base_candidate}_{str(job.video_id)[:8]}"
+            used_bases.add(file_base)
 
             # 1. Clean Transcript text (if AI cleanup was enabled / clean transcript exists)
             clean_text = job.clean_transcript_text
@@ -668,7 +705,7 @@ def export_playlist_zip(
                         srt_bytes = art_path.read_bytes()
                     except Exception:
                         pass
-            if srt_bytes is None and (job.clean_segments_json or job.segments_json):
+            if (not srt_bytes) and (job.clean_segments_json or job.segments_json):
                 segments = job.clean_segments_json or job.segments_json
                 if segments:
                     try:
@@ -677,7 +714,7 @@ def export_playlist_zip(
                             srt_bytes = (srt_content + "\n").encode("utf-8")
                     except Exception:
                         pass
-            if srt_bytes:
+            if srt_bytes and srt_bytes.strip():
                 zf.writestr(f"Subtitles_SRT/{file_base}.srt", srt_bytes)
 
             # 5. Subtitles VTT (.vtt)
@@ -689,7 +726,7 @@ def export_playlist_zip(
                         vtt_bytes = art_path.read_bytes()
                     except Exception:
                         pass
-            if vtt_bytes is None and (job.clean_segments_json or job.segments_json):
+            if (not vtt_bytes) and (job.clean_segments_json or job.segments_json):
                 segments = job.clean_segments_json or job.segments_json
                 if segments:
                     try:
@@ -698,7 +735,7 @@ def export_playlist_zip(
                             vtt_bytes = (vtt_content + "\n").encode("utf-8")
                     except Exception:
                         pass
-            if vtt_bytes:
+            if vtt_bytes and vtt_bytes.strip() and vtt_bytes.strip() != b"WEBVTT":
                 zf.writestr(f"Subtitles_VTT/{file_base}.vtt", vtt_bytes)
 
     zip_bytes = zip_buffer.getvalue()

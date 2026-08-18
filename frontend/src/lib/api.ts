@@ -353,6 +353,15 @@ export async function cancelPlaylistBatch(batchId: string): Promise<PlaylistBatc
   }
 }
 
+export async function retryFailedPlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/retry-failed`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
 export async function runAiCleaner(jobId: string): Promise<TranscriptJob> {
   try {
     const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/run-cleaner`);

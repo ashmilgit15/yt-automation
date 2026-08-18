@@ -497,6 +497,91 @@ class TestPlaylistZipExport(unittest.TestCase):
         self.assertIn("00:00:10.000 --> 00:00:12.000\nInverted segment 2", vtt_output)
 
 
+    def test_export_zip_filename_collision(self):
+        batch_id = uuid.uuid4()
+        batch = PlaylistBatch(
+            id=batch_id,
+            playlist_id="PL_COLLIDE",
+            source_url="https://www.youtube.com/playlist?list=PL_COLLIDE",
+            title="Collision Batch",
+            status=PlaylistStatus.COMPLETED,
+            total_videos=2,
+            completed_videos=2,
+        )
+        job1 = TranscriptJob(
+            id=uuid.uuid4(),
+            playlist_batch_id=batch_id,
+            video_id="vid_dup_1",
+            video_url="https://www.youtube.com/watch?v=vid_dup_1",
+            title="Duplicate Title",
+            position=0,
+            status=TranscriptStatus.COMPLETED,
+            transcript_text="Transcript one.",
+        )
+        job2 = TranscriptJob(
+            id=uuid.uuid4(),
+            playlist_batch_id=batch_id,
+            video_id="vid_dup_2",
+            video_url="https://www.youtube.com/watch?v=vid_dup_2",
+            title="Duplicate Title",
+            position=0,
+            status=TranscriptStatus.COMPLETED,
+            transcript_text="Transcript two.",
+        )
+        self.db.add_all([batch, job1, job2])
+        self.db.commit()
+
+        response = self.client.get(f"/api/v1/playlists/{batch_id}/export/zip")
+        self.assertEqual(response.status_code, 200)
+
+        zip_bytes = io.BytesIO(response.content)
+        with zipfile.ZipFile(zip_bytes, "r") as zf:
+            namelist = zf.namelist()
+            self.assertIn("Transcripts/01 - Duplicate Title.txt", namelist)
+            self.assertIn(f"Transcripts/01 - Duplicate Title_{job2.video_id[:8]}.txt", namelist)
+            self.assertEqual(zf.read("Transcripts/01 - Duplicate Title.txt").decode("utf-8").strip(), "Transcript one.")
+            self.assertEqual(zf.read(f"Transcripts/01 - Duplicate Title_{job2.video_id[:8]}.txt").decode("utf-8").strip(), "Transcript two.")
+
+    def test_export_zip_empty_and_blank_subtitles(self):
+        batch_id = uuid.uuid4()
+        batch = PlaylistBatch(
+            id=batch_id,
+            playlist_id="PL_BLANK_SUBS",
+            source_url="https://www.youtube.com/playlist?list=PL_BLANK_SUBS",
+            title="Blank Subs Batch",
+            status=PlaylistStatus.COMPLETED,
+            total_videos=1,
+            completed_videos=1,
+        )
+        job = TranscriptJob(
+            id=uuid.uuid4(),
+            playlist_batch_id=batch_id,
+            video_id="vid_blank_sub",
+            video_url="https://www.youtube.com/watch?v=vid_blank_sub",
+            title="Blank Sub Video",
+            position=0,
+            status=TranscriptStatus.COMPLETED,
+            transcript_text="Transcript with empty cues.",
+            segments_json=[
+                {"start": 0.0, "end": 2.0, "text": "   "},
+                {"start": 2.0, "end": 4.0, "text": ""},
+            ],
+        )
+        self.db.add_all([batch, job])
+        self.db.commit()
+
+        response = self.client.get(f"/api/v1/playlists/{batch_id}/export/zip")
+        self.assertEqual(response.status_code, 200)
+
+        zip_bytes = io.BytesIO(response.content)
+        with zipfile.ZipFile(zip_bytes, "r") as zf:
+            namelist = zf.namelist()
+            self.assertIn("Transcripts/01 - Blank Sub Video.txt", namelist)
+            # Should NOT generate empty SRT or VTT files when text cues are empty
+            self.assertNotIn("Subtitles_SRT/01 - Blank Sub Video.srt", namelist)
+            self.assertNotIn("Subtitles_VTT/01 - Blank Sub Video.vtt", namelist)
+
+
 if __name__ == "__main__":
     unittest.main()
 

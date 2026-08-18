@@ -180,6 +180,7 @@ class SarvamSTTService:
     def transcribe(
         self,
         *,
+        job_id: str | None = None,
         audio_path: str | Path,
         language_code: str = "unknown",
         mode: str = "transcribe",

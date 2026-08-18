@@ -137,7 +137,7 @@ class SarvamSTTService:
                 maybe_sleep_for_rate_limit(dict(resp.headers))
                 return resp
 
-        resp = call_with_backoff(_do_post, retries=4, initial_delay=1.5)
+        resp = call_with_backoff(_do_post, retries=6, initial_delay=2.0)
         payload = resp.json()
 
         transcript = str(payload.get("transcript", "")).strip()
@@ -163,60 +163,56 @@ class SarvamSTTService:
                     }
                 )
         elif transcript:
-            # Fallback if timestamps object not returned
-            duration = ffprobe_duration(audio_path)
             segments.append(
                 {
                     "start": round(time_offset, 3),
-                    "end": round(time_offset + duration, 3),
+                    "end": round(time_offset + (len(transcript.split()) * 0.4), 3),
                     "text": transcript,
                 }
             )
 
         return {
             "transcript": transcript,
-            "language": detected_lang,
             "segments": segments,
+            "language": detected_lang,
         }
 
     def transcribe(
         self,
         *,
-        job_id: str,
-        audio_path: Path,
+        audio_path: str | Path,
         language_code: str = "unknown",
         mode: str = "transcribe",
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> dict[str, Any]:
         """
-        Main transcription entry point.
-        Automatically chunks long audio files and reports real-time progress.
+        Transcribe an audio file using Sarvam AI STT API.
+        For audio files longer than 30 seconds, automatically splits into chunks
+        and joins the resulting transcripts and offset segments.
         """
-        job_dir = get_job_directory(job_id)
-        chunks_dir = job_dir / "sarvam_chunks"
+        audio_path = Path(audio_path).resolve()
+        if not audio_path.is_file():
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        
+        job_dir = audio_path.parent
+
+        total_duration = self._get_audio_duration(audio_path)
+        chunks_dir = audio_path.parent / "sarvam_chunks"
         chunks_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
-            total_duration = ffprobe_duration(audio_path)
-        except Exception:
-            total_duration = 30.0
-
-        all_segments: list[dict[str, Any]] = []
         all_transcripts: list[str] = []
+        all_segments: list[dict[str, Any]] = []
         detected_languages: list[str] = []
 
-        if total_duration <= 30.0:
+        if total_duration <= CHUNK_DURATION_SECONDS:
             if progress_callback:
-                progress_callback(30, "Transcribing with Sarvam AI (saaras:v3)...")
+                progress_callback(20, "Transcribing single audio file with Sarvam AI...")
             result = self._transcribe_single_clip(
-                audio_path=audio_path,
-                language_code=language_code,
-                mode=mode,
-                time_offset=0.0,
+                audio_path, language_code, mode, time_offset=0.0
             )
-            all_segments = result["segments"]
             if result["transcript"]:
                 all_transcripts.append(result["transcript"])
+            all_segments.extend(result["segments"])
             detected_languages.append(result["language"])
         else:
             # Long audio: slice into chunks
@@ -238,19 +234,20 @@ class SarvamSTTService:
             results_by_index: dict[int, dict[str, Any]] = {}
             completed_count = 0
 
-            # Process chunks concurrently with rate limiting (max 3 workers to stay within Sarvam RPM)
-            max_workers = min(3, total_chunks)
+            # Process chunks with rate-limiting resilience (max 2 workers)
+            max_workers = min(2, total_chunks)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_map = {
-                    executor.submit(
+                future_map = {}
+                for idx, start_time, _, chunk_path in chunk_infos:
+                    f = executor.submit(
                         self._transcribe_single_clip,
                         chunk_path,
                         language_code,
                         mode,
                         start_time,
-                    ): idx
-                    for idx, start_time, _, chunk_path in chunk_infos
-                }
+                    )
+                    future_map[f] = idx
+                    time.sleep(0.2)
 
                 for future in as_completed(future_map):
                     idx = future_map[future]

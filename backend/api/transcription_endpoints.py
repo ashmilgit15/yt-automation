@@ -24,10 +24,8 @@ from backend.models.transcription_schemas import (
     PlaylistBatchSummaryRead,
     PlaylistCreateRequest,
     PlaylistVideoRead,
-    SingleVideoCreateRequest,
     TranscriptJobRead,
 )
-from backend.services.subtitles import generate_subtitles_bundle
 from backend.services.youtube_playlist import YouTubePlaylistService
 from backend.worker.tasks import (
     run_ai_cleaner_task,

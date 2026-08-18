@@ -537,11 +537,11 @@ export function TranscriptionDashboard() {
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-semibold text-white text-sm">Local Faster-Whisper</span>
+                      <span className="font-semibold text-white text-sm">Local Whisper (Large v3 Turbo)</span>
                       <Server className="h-4 w-4 text-cyan-400" />
                     </div>
                     <p className="mt-1.5 text-xs text-slate-400">
-                      NVIDIA GPU CTranslate2 acceleration on your RTX 3050. 100% private, free & offline.
+                      NVIDIA RTX 3050 GPU CTranslate2 INT8 acceleration. Zero-hallucination VAD, 100% private, free & offline.
                     </p>
                   </div>
 

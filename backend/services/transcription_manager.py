@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 class GroqWhisperService:
-    """Cloud Whisper service via Groq API (whisper-large-v3-turbo)."""
+    """Cloud Whisper service via Groq API (whisper-large-v3-turbo) with multi-key pool rotation."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_keys: list[str] | None = None) -> None:
         self.settings = get_settings()
-        self.api_key = api_key or self.settings.groq_api_key
+        self.api_keys = api_keys or self.settings.get_groq_api_keys()
 
     def acquire_audio(self, *, job_id: str, video_url: str) -> Path:
         return LocalWhisperService().acquire_audio(job_id=job_id, video_url=video_url)
@@ -38,83 +38,99 @@ class GroqWhisperService:
     ) -> dict[str, Any]:
         import requests
 
-        if not self.api_key:
+        if not self.api_keys:
             raise RuntimeError(
-                "GROQ_API_KEY is not configured. Cloud Groq transcription cannot continue."
+                "No GROQ_API_KEYS configured. Cloud Groq transcription cannot continue."
             )
 
         job_dir = get_job_directory(job_id)
         if progress_callback:
             progress_callback(30, "Sending audio to Groq Whisper Cloud...")
 
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        errors: list[str] = []
+        for key_idx, key in enumerate(self.api_keys):
+            headers = {"Authorization": f"Bearer {key}"}
+            masked_key = key[:6] + "..." + key[-4:] if len(key) > 10 else "***"
 
-        def _request() -> requests.Response:
-            with audio_path.open("rb") as audio_file:
-                files = {
-                    "file": (audio_path.name, audio_file, "application/octet-stream")
-                }
-                data: dict[str, Any] = {
-                    "model": self.settings.groq_whisper_model,
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "word",
-                }
-                if language_code and language_code != "unknown":
-                    data["language"] = language_code.split("-")[0]
+            def _request() -> requests.Response:
+                with audio_path.open("rb") as audio_file:
+                    files = {
+                        "file": (audio_path.name, audio_file, "application/octet-stream")
+                    }
+                    data: dict[str, Any] = {
+                        "model": self.settings.groq_whisper_model,
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "word",
+                    }
+                    if language_code and language_code != "unknown":
+                        data["language"] = language_code.split("-")[0]
 
-                resp = requests.post(
-                    "https://api.groq.com/openai/v1/audio/transcriptions",
-                    headers=headers,
-                    files=files,
-                    data=data,
-                    timeout=300,
+                    resp = requests.post(
+                        "https://api.groq.com/openai/v1/audio/transcriptions",
+                        headers=headers,
+                        files=files,
+                        data=data,
+                        timeout=300,
+                    )
+                    resp.raise_for_status()
+                    maybe_sleep_for_rate_limit(dict(resp.headers))
+                    return resp
+
+            try:
+                if key_idx > 0 and progress_callback:
+                    progress_callback(
+                        30, f"Groq key rotated to key #{key_idx + 1} ({masked_key})..."
+                    )
+                response = call_with_backoff(_request)
+                payload = response.json()
+
+                segments: list[dict[str, Any]] = []
+                raw_segments = payload.get("segments") or []
+                for s in raw_segments:
+                    segments.append(
+                        {
+                            "start": round(float(s.get("start", 0.0)), 3),
+                            "end": round(float(s.get("end", 0.0)), 3),
+                            "text": str(s.get("text", "")).strip(),
+                        }
+                    )
+
+                full_text = payload.get("text", "").strip() or "\n".join(
+                    s["text"] for s in segments
                 )
-                resp.raise_for_status()
-                maybe_sleep_for_rate_limit(dict(resp.headers))
-                return resp
+                detected_lang = payload.get("language") or language_code
 
-        response = call_with_backoff(_request)
-        payload = response.json()
+                artifact_paths = write_transcript_artifacts(
+                    job_dir=job_dir,
+                    transcript_text=full_text,
+                    segments=segments,
+                    metadata={
+                        "engine": "groq",
+                        "model": self.settings.groq_whisper_model,
+                        "language": detected_lang,
+                    },
+                )
 
-        segments: list[dict[str, Any]] = []
-        raw_segments = payload.get("segments") or []
-        for s in raw_segments:
-            segments.append(
-                {
-                    "start": round(float(s.get("start", 0.0)), 3),
-                    "end": round(float(s.get("end", 0.0)), 3),
-                    "text": str(s.get("text", "")).strip(),
+                return {
+                    "language": detected_lang,
+                    "segments": segments,
+                    "transcript_text": full_text,
+                    "artifact_paths": artifact_paths,
                 }
-            )
+            except Exception as e:
+                err_msg = f"Key #{key_idx + 1} ({masked_key}) failed: {e}"
+                logger.warning(f"[Job {job_id}] Groq {err_msg}")
+                errors.append(err_msg)
 
-        full_text = payload.get("text", "").strip() or "\n".join(
-            s["text"] for s in segments
+        raise RuntimeError(
+            f"All {len(self.api_keys)} Groq API keys exhausted: {'; '.join(errors)}"
         )
-        detected_lang = payload.get("language") or language_code
-
-        artifact_paths = write_transcript_artifacts(
-            job_dir=job_dir,
-            transcript_text=full_text,
-            segments=segments,
-            metadata={
-                "engine": "groq",
-                "model": self.settings.groq_whisper_model,
-                "language": detected_lang,
-            },
-        )
-
-        return {
-            "language": detected_lang,
-            "segments": segments,
-            "transcript_text": full_text,
-            "artifact_paths": artifact_paths,
-        }
 
 
 class TranscriptionManager:
     """
     Unified manager routing transcription requests to the selected engine with
-    automatic cascading fallback when an engine fails (e.g. rate limits, network, quotas).
+    automatic fallback to Local GPU Whisper when cloud engines or keys are exhausted.
     """
 
     def __init__(self) -> None:
@@ -128,36 +144,22 @@ class TranscriptionManager:
                 logger.warning(
                     f"Sarvam audio acquire failed for job {job_id} ({e}), falling back to standard audio acquire."
                 )
-        # Both local_whisper and groq use MP3
+        # Default MP3 acquisition
         return LocalWhisperService().acquire_audio(job_id=job_id, video_url=video_url)
 
     def _get_engine_order(self, preferred_engine: str) -> list[str]:
-        """Builds an ordered list of engines to try with preferred engine first."""
+        """Builds fallback chain. Falls back to local_whisper (Sarvam excluded from fallback)."""
         preferred = (preferred_engine or "local_whisper").lower().strip()
-        available: list[str] = []
 
-        if preferred == "sarvam":
-            available = ["sarvam"]
-            if self.settings.groq_api_key:
-                available.append("groq")
-            available.append("local_whisper")
-        elif preferred == "groq":
-            available = ["groq"]
-            available.append("local_whisper")
-            if self.settings.sarvam_api_key:
-                available.append("sarvam")
+        if preferred == "groq":
+            # Try Groq (rotates through all configured Groq keys), then fallback directly to Local Whisper
+            return ["groq", "local_whisper"]
+        elif preferred == "sarvam":
+            # If user explicitly chose Sarvam, try Sarvam first, then fallback to Local Whisper
+            return ["sarvam", "local_whisper"]
         else:
-            available = ["local_whisper"]
-            if self.settings.groq_api_key:
-                available.append("groq")
-            if self.settings.sarvam_api_key:
-                available.append("sarvam")
-
-        # Guarantee local_whisper is always present as ultimate failsafe
-        if "local_whisper" not in available:
-            available.append("local_whisper")
-
-        return available
+            # Local Whisper is primary
+            return ["local_whisper"]
 
     def transcribe(
         self,

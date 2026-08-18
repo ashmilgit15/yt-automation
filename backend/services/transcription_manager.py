@@ -78,15 +78,18 @@ class GroqWhisperService:
         errors: list[str] = []
         for key_idx, key in enumerate(self.api_keys):
             headers = {"Authorization": f"Bearer {key}"}
-            masked_key = key[:6] + "..." + key[-4:] if len(key) > 10 else "***"
+            masked_key = f"{key[:4]}...{key[-4:]}"
 
             def _request() -> requests.Response:
+                import mimetypes
+
+                mime_type = mimetypes.guess_type(str(upload_path))[0] or "audio/mpeg"
                 with upload_path.open("rb") as audio_file:
                     files = {
                         "file": (
                             upload_path.name,
                             audio_file,
-                            "application/octet-stream",
+                            mime_type,
                         )
                     }
                     data: dict[str, Any] = {

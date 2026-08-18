@@ -551,30 +551,41 @@ def export_playlist_zip(
     """Packages all completed transcripts in the playlist batch into a zip archive with clean titles."""
     import io
     import re
+    import unicodedata
+    import urllib.parse
     import zipfile
     from backend.services.subtitles import build_srt, build_vtt
 
     batch, jobs = _load_batch(db, batch_id)
-    completed_jobs = [
-        j
-        for j in jobs
-        if j.transcript_text
-        or j.clean_transcript_text
-        or j.summary_markdown
-        or (j.artifact_paths and len(j.artifact_paths) > 0)
-        or (j.segments_json and len(j.segments_json) > 0)
-    ]
+
+    def _sanitize(text: str) -> str:
+        s = re.sub(r'[\x00-\x1f\x7f\\/*?:"<>|]', "", text or "")
+        s = re.sub(r"\s+", " ", s).strip(". ")
+        return s[:90] if s else "video"
+
+    def _has_job_content(j: TranscriptJob) -> bool:
+        if (
+            (j.transcript_text and j.transcript_text.strip())
+            or (j.clean_transcript_text and j.clean_transcript_text.strip())
+            or (j.summary_markdown and j.summary_markdown.strip())
+            or (j.segments_json and len(j.segments_json) > 0)
+            or (j.clean_segments_json and len(j.clean_segments_json) > 0)
+        ):
+            return True
+        if j.artifact_paths:
+            for key in ("txt", "clean_txt", "summary_md", "srt", "vtt"):
+                p = j.artifact_paths.get(key)
+                if p and Path(p).is_file():
+                    return True
+        return False
+
+    completed_jobs = [j for j in jobs if _has_job_content(j)]
 
     if not completed_jobs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No completed transcripts available to export",
         )
-
-    def _sanitize(text: str) -> str:
-        s = re.sub(r'[\\/*?:"<>|]', "", text or "")
-        s = re.sub(r"\s+", " ", s).strip()
-        return s[:90] if s else "video"
 
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -587,14 +598,7 @@ def export_playlist_zip(
             )
 
         for idx, job in enumerate(jobs):
-            # Check if this job has any completed transcript or subtitle content
-            has_raw = bool(job.transcript_text and job.transcript_text.strip())
-            has_clean = bool(job.clean_transcript_text and job.clean_transcript_text.strip())
-            has_summary = bool(job.summary_markdown and job.summary_markdown.strip())
-            has_artifacts = bool(job.artifact_paths and len(job.artifact_paths) > 0)
-            has_segments = bool(job.segments_json and len(job.segments_json) > 0)
-
-            if not (has_raw or has_clean or has_summary or has_artifacts or has_segments):
+            if not _has_job_content(job):
                 continue
 
             pos_num = (job.position + 1) if job.position is not None else (idx + 1)
@@ -602,24 +606,56 @@ def export_playlist_zip(
             file_base = f"{pos_num:02d} - {safe_title}"
 
             # 1. Clean Transcript text (if AI cleanup was enabled / clean transcript exists)
-            if has_clean and job.clean_transcript_text:
+            clean_text = job.clean_transcript_text
+            if not (clean_text and clean_text.strip()) and job.artifact_paths and job.artifact_paths.get("clean_txt"):
+                art_p = Path(job.artifact_paths["clean_txt"])
+                if art_p.is_file():
+                    try:
+                        clean_text = art_p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+            if clean_text and clean_text.strip():
                 zf.writestr(
                     f"Clean_Transcripts/{file_base} (Clean).txt",
-                    (job.clean_transcript_text.strip() + "\n").encode("utf-8"),
+                    (clean_text.strip() + "\n").encode("utf-8"),
                 )
 
             # 2. Main / Raw Transcript text
-            if has_raw and job.transcript_text:
+            raw_text = job.transcript_text
+            if not (raw_text and raw_text.strip()) and job.artifact_paths and job.artifact_paths.get("txt"):
+                art_p = Path(job.artifact_paths["txt"])
+                if art_p.is_file():
+                    try:
+                        raw_text = art_p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+            if not (raw_text and raw_text.strip()) and job.segments_json:
+                seg_texts = [
+                    s.get("text", "").strip()
+                    for s in job.segments_json
+                    if isinstance(s, dict) and s.get("text")
+                ]
+                if seg_texts:
+                    raw_text = " ".join(seg_texts)
+            if raw_text and raw_text.strip():
                 zf.writestr(
                     f"Transcripts/{file_base}.txt",
-                    (job.transcript_text.strip() + "\n").encode("utf-8"),
+                    (raw_text.strip() + "\n").encode("utf-8"),
                 )
 
             # 3. AI Summary Markdown (if AI summarization was enabled / summary exists)
-            if has_summary and job.summary_markdown:
+            sum_text = job.summary_markdown
+            if not (sum_text and sum_text.strip()) and job.artifact_paths and job.artifact_paths.get("summary_md"):
+                art_p = Path(job.artifact_paths["summary_md"])
+                if art_p.is_file():
+                    try:
+                        sum_text = art_p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+            if sum_text and sum_text.strip():
                 zf.writestr(
                     f"Summaries/{file_base} - Summary.md",
-                    (job.summary_markdown.strip() + "\n").encode("utf-8"),
+                    (sum_text.strip() + "\n").encode("utf-8"),
                 )
 
             # 4. Subtitles SRT (.srt)
@@ -635,7 +671,9 @@ def export_playlist_zip(
                 segments = job.clean_segments_json or job.segments_json
                 if segments:
                     try:
-                        srt_bytes = (build_srt(segments).strip() + "\n").encode("utf-8")
+                        srt_content = build_srt(segments).strip()
+                        if srt_content:
+                            srt_bytes = (srt_content + "\n").encode("utf-8")
                     except Exception:
                         pass
             if srt_bytes:
@@ -654,20 +692,23 @@ def export_playlist_zip(
                 segments = job.clean_segments_json or job.segments_json
                 if segments:
                     try:
-                        vtt_bytes = (build_vtt(segments).strip() + "\n").encode("utf-8")
+                        vtt_content = build_vtt(segments).strip()
+                        if vtt_content and vtt_content != "WEBVTT":
+                            vtt_bytes = (vtt_content + "\n").encode("utf-8")
                     except Exception:
                         pass
             if vtt_bytes:
                 zf.writestr(f"Subtitles_VTT/{file_base}.vtt", vtt_bytes)
 
     zip_bytes = zip_buffer.getvalue()
-    import unicodedata
-    import urllib.parse
 
-    safe_batch_title = _sanitize(batch.title or f"playlist_{batch.playlist_id}") or "Playlist"
+    safe_batch_title = _sanitize(batch.title or f"playlist_{batch.playlist_id}")
+    if safe_batch_title == "video" or not safe_batch_title:
+        safe_batch_title = "Playlist"
+
     ascii_title = unicodedata.normalize("NFKD", safe_batch_title).encode("ascii", "ignore").decode("ascii")
-    ascii_title = re.sub(r'[\\/*?:"<>|]', "", ascii_title).strip() or "Playlist"
-    
+    ascii_title = re.sub(r'[\x00-\x1f\x7f\\/*?:"<>|]', "", ascii_title).strip(". ") or "Playlist"
+
     ascii_filename = f"{ascii_title[:80]} Transcripts.zip"
     encoded_filename = urllib.parse.quote(f"{safe_batch_title} Transcripts.zip")
 

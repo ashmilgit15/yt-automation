@@ -308,6 +308,162 @@ class TestPlaylistZipExport(unittest.TestCase):
             for filename in namelist:
                 self.assertFalse(re.search(r'[\\*?:"<>|]', filename), f"Illegal char in filename: {filename}")
 
+    def test_export_zip_nonexistent_batch_returns_404(self):
+        random_batch_id = uuid.uuid4()
+        response = self.client.get(f"/api/v1/playlists/{random_batch_id}/export/zip")
+        self.assertEqual(response.status_code, 404)
+        data = response.json()
+        self.assertIn("Playlist batch not found", data["detail"])
+
+    def test_export_zip_loads_disk_artifacts(self, tmp_path_factory=None):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            raw_file = tmp / "raw.txt"
+            raw_file.write_text("Disk raw transcript content.", encoding="utf-8")
+            clean_file = tmp / "clean.txt"
+            clean_file.write_text("Disk clean transcript content.", encoding="utf-8")
+            sum_file = tmp / "summary.md"
+            sum_file.write_text("# Disk Summary", encoding="utf-8")
+            srt_file = tmp / "sub.srt"
+            srt_file.write_text("1\n00:00:00,000 --> 00:00:02,000\nDisk SRT\n", encoding="utf-8")
+            vtt_file = tmp / "sub.vtt"
+            vtt_file.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nDisk VTT\n", encoding="utf-8")
+
+            batch_id = uuid.uuid4()
+            batch = PlaylistBatch(
+                id=batch_id,
+                playlist_id="PL_DISK",
+                source_url="https://www.youtube.com/playlist?list=PL_DISK",
+                title="Disk Artifacts Batch",
+                status=PlaylistStatus.COMPLETED,
+                total_videos=1,
+                completed_videos=1,
+            )
+            job = TranscriptJob(
+                id=uuid.uuid4(),
+                playlist_batch_id=batch_id,
+                video_id="v_disk",
+                video_url="https://www.youtube.com/watch?v=v_disk",
+                title="Disk Video",
+                position=0,
+                status=TranscriptStatus.COMPLETED,
+                transcript_text=None,
+                clean_transcript_text=None,
+                summary_markdown=None,
+                artifact_paths={
+                    "txt": str(raw_file),
+                    "clean_txt": str(clean_file),
+                    "summary_md": str(sum_file),
+                    "srt": str(srt_file),
+                    "vtt": str(vtt_file),
+                },
+            )
+            self.db.add_all([batch, job])
+            self.db.commit()
+
+            response = self.client.get(f"/api/v1/playlists/{batch_id}/export/zip")
+            self.assertEqual(response.status_code, 200)
+
+            zip_bytes = io.BytesIO(response.content)
+            with zipfile.ZipFile(zip_bytes, "r") as zf:
+                namelist = zf.namelist()
+                self.assertIn("Transcripts/01 - Disk Video.txt", namelist)
+                self.assertEqual(zf.read("Transcripts/01 - Disk Video.txt").decode("utf-8").strip(), "Disk raw transcript content.")
+                self.assertIn("Clean_Transcripts/01 - Disk Video (Clean).txt", namelist)
+                self.assertEqual(zf.read("Clean_Transcripts/01 - Disk Video (Clean).txt").decode("utf-8").strip(), "Disk clean transcript content.")
+                self.assertIn("Summaries/01 - Disk Video - Summary.md", namelist)
+                self.assertEqual(zf.read("Summaries/01 - Disk Video - Summary.md").decode("utf-8").strip(), "# Disk Summary")
+                self.assertIn("Subtitles_SRT/01 - Disk Video.srt", namelist)
+                self.assertIn("Disk SRT", zf.read("Subtitles_SRT/01 - Disk Video.srt").decode("utf-8"))
+                self.assertIn("Subtitles_VTT/01 - Disk Video.vtt", namelist)
+                self.assertIn("Disk VTT", zf.read("Subtitles_VTT/01 - Disk Video.vtt").decode("utf-8"))
+
+    def test_export_zip_synthesizes_from_segments_with_none_values(self):
+        batch_id = uuid.uuid4()
+        batch = PlaylistBatch(
+            id=batch_id,
+            playlist_id="PL_SEGS",
+            source_url="https://www.youtube.com/playlist?list=PL_SEGS",
+            title="Segments Only Batch",
+            status=PlaylistStatus.COMPLETED,
+            total_videos=1,
+            completed_videos=1,
+        )
+        job = TranscriptJob(
+            id=uuid.uuid4(),
+            playlist_batch_id=batch_id,
+            video_id="v_segs",
+            video_url="https://www.youtube.com/watch?v=v_segs",
+            title="Segment Video",
+            position=0,
+            status=TranscriptStatus.COMPLETED,
+            transcript_text=None,
+            segments_json=[
+                {"start": None, "end": None, "text": "Segment first line."},
+                {"start": 3.5, "end": 6.2, "text": "Segment second line."},
+            ],
+        )
+        self.db.add_all([batch, job])
+        self.db.commit()
+
+        response = self.client.get(f"/api/v1/playlists/{batch_id}/export/zip")
+        self.assertEqual(response.status_code, 200)
+
+        zip_bytes = io.BytesIO(response.content)
+        with zipfile.ZipFile(zip_bytes, "r") as zf:
+            namelist = zf.namelist()
+            self.assertIn("Transcripts/01 - Segment Video.txt", namelist)
+            content = zf.read("Transcripts/01 - Segment Video.txt").decode("utf-8")
+            self.assertIn("Segment first line.", content)
+            self.assertIn("Segment second line.", content)
+            self.assertIn("Subtitles_SRT/01 - Segment Video.srt", namelist)
+            self.assertIn("Subtitles_VTT/01 - Segment Video.vtt", namelist)
+
+    def test_export_zip_unicode_header_and_ordering(self):
+        batch_id = uuid.uuid4()
+        batch = PlaylistBatch(
+            id=batch_id,
+            playlist_id="PL_UNICODE",
+            source_url="https://www.youtube.com/playlist?list=PL_UNICODE",
+            title="日本語・தமிழ்・Playlist 🌟",
+            status=PlaylistStatus.COMPLETED,
+            total_videos=3,
+            completed_videos=3,
+        )
+        batch.master_summary = "# Master Summary via Property"
+        self.assertEqual(batch.master_summary, "# Master Summary via Property")
+
+        jobs = [
+            TranscriptJob(
+                id=uuid.uuid4(),
+                playlist_batch_id=batch_id,
+                video_id=f"v_ord_{i}",
+                video_url=f"https://www.youtube.com/watch?v=v_ord_{i}",
+                title=f"Video Number {i}",
+                position=i - 1,
+                status=TranscriptStatus.COMPLETED,
+                transcript_text=f"Transcript content for video {i}.",
+            )
+            for i in [1, 2, 3]
+        ]
+        self.db.add(batch)
+        self.db.add_all(jobs)
+        self.db.commit()
+
+        response = self.client.get(f"/api/v1/playlists/{batch_id}/export/zip")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("filename*=", response.headers["content-disposition"])
+
+        zip_bytes = io.BytesIO(response.content)
+        with zipfile.ZipFile(zip_bytes, "r") as zf:
+            namelist = zf.namelist()
+            self.assertIn("00_MASTER_PLAYLIST_SUMMARY.md", namelist)
+            self.assertIn("Transcripts/01 - Video Number 1.txt", namelist)
+            self.assertIn("Transcripts/02 - Video Number 2.txt", namelist)
+            self.assertIn("Transcripts/03 - Video Number 3.txt", namelist)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -5,12 +5,17 @@ from pathlib import Path
 from typing import Any
 
 
-def format_timestamp(seconds_value: float, separator: str = ",") -> str:
+def format_timestamp(seconds_value: float | Any, separator: str = ",") -> str:
     """
     Format a floating-point seconds value into HH:MM:SS,mmm or HH:MM:SS.mmm.
     Guarantees millisecond is always 3 digits (000-999) with proper hour/minute roll-over.
     """
-    if seconds_value < 0:
+    try:
+        seconds_value = float(seconds_value)
+    except (ValueError, TypeError):
+        seconds_value = 0.0
+
+    if seconds_value < 0 or seconds_value != seconds_value:
         seconds_value = 0.0
 
     total_milliseconds = int(round(seconds_value * 1000))
@@ -28,8 +33,21 @@ def build_srt(segments: list[dict[str, Any]]) -> str:
     """Generate RFC/SubRip compliant SRT subtitles."""
     lines: list[str] = []
     for index, segment in enumerate(segments, start=1):
-        start_str = format_timestamp(float(segment.get("start", 0.0)), separator=",")
-        end_str = format_timestamp(float(segment.get("end", 0.0)), separator=",")
+        if not isinstance(segment, dict):
+            continue
+        start_val = segment.get("start")
+        try:
+            start_num = float(start_val) if start_val is not None else 0.0
+        except (ValueError, TypeError):
+            start_num = 0.0
+        end_val = segment.get("end")
+        try:
+            end_num = float(end_val) if end_val is not None else start_num + 2.0
+        except (ValueError, TypeError):
+            end_num = start_num + 2.0
+
+        start_str = format_timestamp(start_num, separator=",")
+        end_str = format_timestamp(end_num, separator=",")
         text = str(segment.get("text", "")).strip()
 
         lines.append(str(index))
@@ -43,8 +61,21 @@ def build_vtt(segments: list[dict[str, Any]]) -> str:
     """Generate standard WebVTT subtitles."""
     lines: list[str] = ["WEBVTT", ""]
     for segment in segments:
-        start_str = format_timestamp(float(segment.get("start", 0.0)), separator=".")
-        end_str = format_timestamp(float(segment.get("end", 0.0)), separator=".")
+        if not isinstance(segment, dict):
+            continue
+        start_val = segment.get("start")
+        try:
+            start_num = float(start_val) if start_val is not None else 0.0
+        except (ValueError, TypeError):
+            start_num = 0.0
+        end_val = segment.get("end")
+        try:
+            end_num = float(end_val) if end_val is not None else start_num + 2.0
+        except (ValueError, TypeError):
+            end_num = start_num + 2.0
+
+        start_str = format_timestamp(start_num, separator=".")
+        end_str = format_timestamp(end_num, separator=".")
         text = str(segment.get("text", "")).strip()
 
         lines.append(f"{start_str} --> {end_str}")

@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ffmpeg fonts-dejavu-core gcc \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ffmpeg fonts-dejavu-core gcc nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/python3 /usr/local/bin/python
 

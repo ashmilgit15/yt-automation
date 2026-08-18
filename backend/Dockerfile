@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-montserrat fonts-dejavu-core gcc \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core gcc nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt /tmp/requirements.txt

@@ -47,15 +47,47 @@ class GroqWhisperService:
         if progress_callback:
             progress_callback(30, "Sending audio to Groq Whisper Cloud...")
 
+        # Groq has a 25 MB file limit. If audio exceeds 24MB, compress to 48k mono MP3
+        upload_path = audio_path
+        if audio_path.is_file() and audio_path.stat().st_size > 24 * 1024 * 1024:
+            compressed_path = job_dir / "compressed_groq_source.mp3"
+            if not compressed_path.is_file():
+                import subprocess
+
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        str(audio_path),
+                        "-ac",
+                        "1",
+                        "-b:a",
+                        "48k",
+                        str(compressed_path),
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+            if (
+                compressed_path.is_file()
+                and compressed_path.stat().st_size <= 25 * 1024 * 1024
+            ):
+                upload_path = compressed_path
+
         errors: list[str] = []
         for key_idx, key in enumerate(self.api_keys):
             headers = {"Authorization": f"Bearer {key}"}
             masked_key = key[:6] + "..." + key[-4:] if len(key) > 10 else "***"
 
             def _request() -> requests.Response:
-                with audio_path.open("rb") as audio_file:
+                with upload_path.open("rb") as audio_file:
                     files = {
-                        "file": (audio_path.name, audio_file, "application/octet-stream")
+                        "file": (
+                            upload_path.name,
+                            audio_file,
+                            "application/octet-stream",
+                        )
                     }
                     data: dict[str, Any] = {
                         "model": self.settings.groq_whisper_model,
@@ -63,7 +95,9 @@ class GroqWhisperService:
                         "timestamp_granularities[]": "word",
                     }
                     if language_code and language_code != "unknown":
-                        data["language"] = language_code.split("-")[0]
+                        clean_lang = language_code.split("-")[0].lower().strip()
+                        if clean_lang:
+                            data["language"] = clean_lang
 
                     resp = requests.post(
                         "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -72,7 +106,15 @@ class GroqWhisperService:
                         data=data,
                         timeout=300,
                     )
-                    resp.raise_for_status()
+                    if not resp.ok:
+                        err_detail = resp.text[:400]
+                        logger.warning(
+                            f"Groq API HTTP {resp.status_code} on key {masked_key}: {err_detail}"
+                        )
+                        raise requests.HTTPError(
+                            f"{resp.status_code} Client Error from Groq: {err_detail}",
+                            response=resp,
+                        )
                     maybe_sleep_for_rate_limit(dict(resp.headers))
                     return resp
 

@@ -133,8 +133,39 @@ INPUT SEGMENTS:
         return cleaned_segments
 
     def _call_llm_json(self, prompt: str) -> dict[str, Any]:
-        """Calls Gemini, Groq, or OpenRouter with fallback."""
-        # 1. Try Gemini
+        """Calls Hack Club AI (google/gemini-3.7-flash), Gemini, Groq, or OpenRouter with fallback."""
+        # 1. Try Hack Club AI (google/gemini-3.7-flash)
+        if self.settings.hackclub_api_key:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {self.settings.hackclub_api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": self.settings.hackclub_model or "google/gemini-3.7-flash",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "response_format": {"type": "json_object"},
+                }
+
+                def _req_hc():
+                    url = f"{self.settings.hackclub_base_url.rstrip('/')}/chat/completions"
+                    res = requests.post(
+                        url,
+                        headers=headers,
+                        json=payload,
+                        timeout=90,
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    content = data["choices"][0]["message"]["content"]
+                    return extract_json_payload(content)
+
+                return call_with_backoff(_req_hc)
+            except Exception as e:
+                logger.warning(f"Hack Club AI cleaner attempt failed: {e}")
+
+        # 2. Try Direct Gemini
         if self.settings.gemini_api_key:
             try:
                 import google.generativeai as genai

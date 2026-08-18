@@ -167,8 +167,39 @@ VIDEOS SUMMARY DATA:
         return "\n".join(md)
 
     def _call_llm_json(self, prompt: str) -> dict[str, Any]:
-        """Calls Gemini, Groq, or OpenRouter for structured JSON."""
-        # 1. Gemini
+        """Calls Hack Club AI (google/gemini-3.7-flash), Gemini, Groq, or OpenRouter for structured JSON."""
+        # 1. Try Hack Club AI (google/gemini-3.7-flash)
+        if self.settings.hackclub_api_key:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {self.settings.hackclub_api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": self.settings.hackclub_model or "google/gemini-3.7-flash",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "response_format": {"type": "json_object"},
+                }
+
+                def _req_hc():
+                    url = f"{self.settings.hackclub_base_url.rstrip('/')}/chat/completions"
+                    res = requests.post(
+                        url,
+                        headers=headers,
+                        json=payload,
+                        timeout=90,
+                    )
+                    res.raise_for_status()
+                    data = res.json()
+                    content = data["choices"][0]["message"]["content"]
+                    return extract_json_payload(content)
+
+                return call_with_backoff(_req_hc)
+            except Exception as e:
+                logger.warning(f"Hack Club AI summarizer attempt failed: {e}")
+
+        # 2. Try Gemini
         if self.settings.gemini_api_key:
             try:
                 import google.generativeai as genai
@@ -190,7 +221,7 @@ VIDEOS SUMMARY DATA:
             except Exception as e:
                 logger.debug(f"Gemini summarizer attempt failed: {e}")
 
-        # 2. Groq Chat
+        # 3. Groq Chat
         if self.settings.groq_api_key:
             try:
                 headers = {
@@ -220,7 +251,7 @@ VIDEOS SUMMARY DATA:
             except Exception as e:
                 logger.debug(f"Groq summarizer attempt failed: {e}")
 
-        # 3. OpenRouter
+        # 4. OpenRouter
         if self.settings.openrouter_api_key:
             headers = {
                 "Authorization": f"Bearer {self.settings.openrouter_api_key}",
@@ -250,7 +281,22 @@ VIDEOS SUMMARY DATA:
         raise RuntimeError("No LLM API keys configured for AI Summarizer.")
 
     def _call_llm_text(self, prompt: str) -> str:
-        """Calls Gemini, Groq, or OpenRouter for markdown text."""
+        """Calls Hack Club AI, Gemini, Groq, or OpenRouter for markdown text."""
+        if self.settings.hackclub_api_key:
+            try:
+                headers = {"Authorization": f"Bearer {self.settings.hackclub_api_key}", "Content-Type": "application/json"}
+                url = f"{self.settings.hackclub_base_url.rstrip('/')}/chat/completions"
+                res = requests.post(
+                    url,
+                    headers=headers,
+                    json={"model": self.settings.hackclub_model or "google/gemini-3.7-flash", "messages": [{"role": "user", "content": prompt}]},
+                    timeout=90,
+                )
+                res.raise_for_status()
+                return res.json()["choices"][0]["message"]["content"]
+            except Exception as exc:
+                logger.warning(f"Hack Club AI text call failed: {exc}")
+
         if self.settings.gemini_api_key:
             try:
                 import google.generativeai as genai

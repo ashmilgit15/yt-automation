@@ -23,7 +23,50 @@ class LLMService:
     def generate_json(
         self, prompt: str, temperature: float = 0.8, images: list[Image.Image] = None
     ) -> dict[str, Any]:
-        # Try Gemini first if available
+        # Try Hack Club AI (google/gemini-3.7-flash) first
+        if settings.hackclub_api_key:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {settings.hackclub_api_key}",
+                    "Content-Type": "application/json",
+                }
+                messages = []
+                if images:
+                    content_list = [{"type": "text", "text": prompt}]
+                    for img in images:
+                        buffered = io.BytesIO()
+                        img.save(buffered, format="JPEG")
+                        img_str = base64.b64encode(buffered.getvalue()).decode()
+                        content_list.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_str}"},
+                            }
+                        )
+                    messages.append({"role": "user", "content": content_list})
+                else:
+                    messages.append({"role": "user", "content": prompt})
+
+                payload = {
+                    "model": settings.hackclub_model or "google/gemini-3.7-flash",
+                    "messages": messages,
+                    "temperature": temperature,
+                    "response_format": {"type": "json_object"},
+                }
+
+                def _request_hackclub():
+                    url = f"{settings.hackclub_base_url.rstrip('/')}/chat/completions"
+                    response = requests.post(url, headers=headers, json=payload, timeout=90)
+                    response.raise_for_status()
+                    data = response.json()
+                    content = data["choices"][0]["message"]["content"]
+                    return extract_json_payload(content)
+
+                return call_with_backoff(_request_hackclub)
+            except Exception as e:
+                pass
+
+        # Try Direct Gemini next
         if self._gemini_model:
             try:
 
@@ -42,13 +85,12 @@ class LLMService:
 
                 return call_with_backoff(_request_gemini)
             except Exception as e:
-                # Log the exception or let it pass through to fallback
                 pass
 
         # Fallback to OpenRouter
         if not settings.openrouter_api_key:
             raise RuntimeError(
-                "Neither GEMINI_API_KEY nor OPENROUTER_API_KEY is configured or both failed."
+                "No valid LLM API key configured (HACKCLUB_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY)."
             )
 
         return self._generate_openrouter_json(prompt, temperature, images)

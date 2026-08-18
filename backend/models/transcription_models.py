@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,17 +13,23 @@ from backend.core.database import Base
 class PlaylistStatus(str, enum.Enum):
     QUEUED = "QUEUED"
     PROCESSING = "PROCESSING"
+    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     PARTIAL = "PARTIAL"
+    CANCELLED = "CANCELLED"
 
 
 class TranscriptStatus(str, enum.Enum):
     PENDING = "PENDING"
     ACQUIRING = "ACQUIRING"
     TRANSCRIBING = "TRANSCRIBING"
+    CLEANING = "CLEANING"
+    SUMMARIZING = "SUMMARIZING"
     EXPORTING = "EXPORTING"
+    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class PlaylistBatch(Base):
@@ -35,7 +41,7 @@ class PlaylistBatch(Base):
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     engine: Mapped[str] = mapped_column(String(32), nullable=False, default="local_whisper")
     status: Mapped[PlaylistStatus] = mapped_column(
-        SqlEnum(PlaylistStatus, name="playlist_batch_status"),
+        SqlEnum(PlaylistStatus, name="playlist_batch_status", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=PlaylistStatus.QUEUED,
         index=True,
@@ -43,6 +49,9 @@ class PlaylistBatch(Base):
     total_videos: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_videos: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_videos: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enable_ai_cleanup: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    enable_ai_summary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    batch_summary_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
@@ -65,7 +74,7 @@ class TranscriptJob(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     engine: Mapped[str] = mapped_column(String(32), nullable=False, default="local_whisper")
     status: Mapped[TranscriptStatus] = mapped_column(
-        SqlEnum(TranscriptStatus, name="transcript_job_status"),
+        SqlEnum(TranscriptStatus, name="transcript_job_status", values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=TranscriptStatus.PENDING,
         index=True,
@@ -74,8 +83,14 @@ class TranscriptJob(Base):
     stage_detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
     language: Mapped[str | None] = mapped_column(String(24), nullable=True)
     mode: Mapped[str | None] = mapped_column(String(32), nullable=True, default="transcribe")
+    enable_ai_cleanup: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    enable_ai_summary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     transcript_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     segments_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    clean_transcript_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    clean_segments_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    summary_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     artifact_paths: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
     error_log: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

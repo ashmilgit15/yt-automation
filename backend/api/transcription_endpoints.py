@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
@@ -26,8 +27,13 @@ from backend.models.transcription_schemas import (
     SingleVideoCreateRequest,
     TranscriptJobRead,
 )
+from backend.services.subtitles import generate_subtitles_bundle
 from backend.services.youtube_playlist import YouTubePlaylistService
-from backend.worker.tasks import transcribe_playlist_item
+from backend.worker.tasks import (
+    run_ai_cleaner_task,
+    run_ai_summarizer_task,
+    transcribe_playlist_item,
+)
 
 router = APIRouter(tags=["bulk-transcription"])
 
@@ -48,8 +54,14 @@ def _job_read(job: TranscriptJob, *, include_transcript: bool = True) -> Transcr
         stage_detail=job.stage_detail,
         language=job.language,
         mode=job.mode or "transcribe",
+        enable_ai_cleanup=job.enable_ai_cleanup,
+        enable_ai_summary=job.enable_ai_summary,
         transcript_text=job.transcript_text if include_transcript else None,
         segments=job.segments_json if include_transcript else None,
+        clean_transcript_text=job.clean_transcript_text if include_transcript else None,
+        clean_segments=job.clean_segments_json if include_transcript else None,
+        summary_json=job.summary_json if include_transcript else None,
+        summary_markdown=job.summary_markdown if include_transcript else None,
         error_summary=(job.error_log or "")[-300:] or None,
         created_at=job.created_at,
         updated_at=job.updated_at,
@@ -67,6 +79,9 @@ def _batch_read(batch: PlaylistBatch, jobs: list[TranscriptJob]) -> PlaylistBatc
         total_videos=batch.total_videos,
         completed_videos=batch.completed_videos,
         failed_videos=batch.failed_videos,
+        enable_ai_cleanup=batch.enable_ai_cleanup,
+        enable_ai_summary=batch.enable_ai_summary,
+        batch_summary_markdown=batch.batch_summary_markdown,
         created_at=batch.created_at,
         updated_at=batch.updated_at,
         jobs=[_job_read(job) for job in jobs],
@@ -89,7 +104,7 @@ def _load_batch(db: Session, batch_id: UUID) -> tuple[PlaylistBatch, list[Transc
 
 @router.get("/playlists", response_model=list[PlaylistBatchSummaryRead])
 def list_playlist_batches(
-    limit: int = 15,
+    limit: int = 30,
     db: Session = Depends(get_db),
     _: object = Depends(require_operator),
     __: None = Depends(rate_limit("playlist-list", 60, 60)),
@@ -113,6 +128,8 @@ def list_playlist_batches(
             total_videos=b.total_videos,
             completed_videos=b.completed_videos,
             failed_videos=b.failed_videos,
+            enable_ai_cleanup=b.enable_ai_cleanup,
+            enable_ai_summary=b.enable_ai_summary,
             created_at=b.created_at,
             updated_at=b.updated_at,
         )
@@ -166,6 +183,8 @@ def create_playlist_batch(
         engine=engine_choice,
         status=PlaylistStatus.QUEUED,
         total_videos=len(selected_videos),
+        enable_ai_cleanup=payload.enable_ai_cleanup,
+        enable_ai_summary=payload.enable_ai_summary,
     )
     db.add(batch)
     db.flush()
@@ -184,6 +203,9 @@ def create_playlist_batch(
             engine=engine_choice,
             language=lang_choice,
             mode=mode_choice,
+            enable_ai_cleanup=payload.enable_ai_cleanup,
+            enable_ai_summary=payload.enable_ai_summary,
+            status=TranscriptStatus.PENDING,
         )
         db.add(job)
         jobs.append(job)
@@ -197,7 +219,7 @@ def create_playlist_batch(
 
 @router.get("/transcripts/recent", response_model=list[TranscriptJobRead])
 def list_recent_transcripts(
-    limit: int = 30,
+    limit: int = 50,
     db: Session = Depends(get_db),
     _: object = Depends(require_operator),
     __: None = Depends(rate_limit("transcripts-recent", 120, 60)),
@@ -220,7 +242,7 @@ def create_single_transcript(
     _: object = Depends(require_operator),
     __: None = Depends(rate_limit("single-transcript-create", 20, 60)),
 ) -> TranscriptJobRead:
-    """Directly transcribes a single YouTube video URL without requiring a playlist."""
+    """Directly transcribes a single YouTube video URL with optional AI cleanup and summary."""
     video_url = payload.video_url.strip()
     title = "YouTube Video"
     video_id = "video"
@@ -256,6 +278,8 @@ def create_single_transcript(
         engine=payload.engine or "local_whisper",
         language=payload.language_code or "unknown",
         mode=payload.mode or "transcribe",
+        enable_ai_cleanup=payload.enable_ai_cleanup,
+        enable_ai_summary=payload.enable_ai_summary,
         status=TranscriptStatus.PENDING,
         progress=0,
     )
@@ -291,6 +315,151 @@ def read_transcript_job(
     return _job_read(job)
 
 
+# --- PAUSE, RESUME, CANCEL CONTROLS ---
+
+@router.post("/transcripts/{job_id}/pause", response_model=TranscriptJobRead)
+def pause_transcript_job(
+    job_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> TranscriptJobRead:
+    job = db.get(TranscriptJob, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    if job.status in {TranscriptStatus.COMPLETED, TranscriptStatus.CANCELLED, TranscriptStatus.FAILED}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Job cannot be paused in its current state.")
+    job.status = TranscriptStatus.PAUSED
+    job.stage_detail = "Paused by user."
+    db.commit()
+    db.refresh(job)
+    return _job_read(job)
+
+
+@router.post("/transcripts/{job_id}/resume", response_model=TranscriptJobRead, status_code=status.HTTP_202_ACCEPTED)
+def resume_transcript_job(
+    job_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> TranscriptJobRead:
+    job = db.get(TranscriptJob, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    if job.status != TranscriptStatus.PAUSED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Job is not paused.")
+    job.status = TranscriptStatus.PENDING
+    job.stage_detail = "Resuming task..."
+    db.commit()
+    db.refresh(job)
+    transcribe_playlist_item.delay(str(job.id))
+    return _job_read(job)
+
+
+@router.post("/transcripts/{job_id}/cancel", response_model=TranscriptJobRead)
+def cancel_transcript_job(
+    job_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> TranscriptJobRead:
+    job = db.get(TranscriptJob, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+    job.status = TranscriptStatus.CANCELLED
+    job.stage_detail = "Cancelled by user."
+    db.commit()
+    db.refresh(job)
+    return _job_read(job)
+
+
+@router.post("/playlists/{batch_id}/pause", response_model=PlaylistBatchRead)
+def pause_playlist_batch(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> PlaylistBatchRead:
+    batch, jobs = _load_batch(db, batch_id)
+    batch.status = PlaylistStatus.PAUSED
+    for job in jobs:
+        if job.status not in {TranscriptStatus.COMPLETED, TranscriptStatus.FAILED, TranscriptStatus.CANCELLED}:
+            job.status = TranscriptStatus.PAUSED
+            job.stage_detail = "Paused with batch."
+    db.commit()
+    db.refresh(batch)
+    return _batch_read(batch, jobs)
+
+
+@router.post("/playlists/{batch_id}/resume", response_model=PlaylistBatchRead, status_code=status.HTTP_202_ACCEPTED)
+def resume_playlist_batch(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> PlaylistBatchRead:
+    batch, jobs = _load_batch(db, batch_id)
+    batch.status = PlaylistStatus.PROCESSING
+    for job in jobs:
+        if job.status == TranscriptStatus.PAUSED:
+            job.status = TranscriptStatus.PENDING
+            job.stage_detail = "Resuming batch item..."
+            transcribe_playlist_item.delay(str(job.id))
+    db.commit()
+    db.refresh(batch)
+    return _batch_read(batch, jobs)
+
+
+@router.post("/playlists/{batch_id}/cancel", response_model=PlaylistBatchRead)
+def cancel_playlist_batch(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> PlaylistBatchRead:
+    batch, jobs = _load_batch(db, batch_id)
+    batch.status = PlaylistStatus.CANCELLED
+    for job in jobs:
+        if job.status not in {TranscriptStatus.COMPLETED, TranscriptStatus.FAILED}:
+            job.status = TranscriptStatus.CANCELLED
+            job.stage_detail = "Cancelled with batch."
+    db.commit()
+    db.refresh(batch)
+    return _batch_read(batch, jobs)
+
+
+# --- ON-DEMAND AI AGENT ENDPOINTS ---
+
+@router.post("/transcripts/{job_id}/run-cleaner", response_model=TranscriptJobRead, status_code=status.HTTP_202_ACCEPTED)
+def trigger_ai_cleaner(
+    job_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> TranscriptJobRead:
+    """Runs the AI Cleanup Agent on an existing completed transcript."""
+    job = db.get(TranscriptJob, job_id)
+    if not job or not job.transcript_text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Transcript text is not available for cleanup.")
+    run_ai_cleaner_task.delay(str(job.id))
+    job.status = TranscriptStatus.CLEANING
+    job.stage_detail = "AI Cleanup Agent queued..."
+    db.commit()
+    db.refresh(job)
+    return _job_read(job)
+
+
+@router.post("/transcripts/{job_id}/run-summarizer", response_model=TranscriptJobRead, status_code=status.HTTP_202_ACCEPTED)
+def trigger_ai_summarizer(
+    job_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> TranscriptJobRead:
+    """Runs the AI Summarizer Agent on an existing completed transcript."""
+    job = db.get(TranscriptJob, job_id)
+    if not job or (not job.transcript_text and not job.clean_transcript_text):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Transcript text is not available for summarization.")
+    run_ai_summarizer_task.delay(str(job.id))
+    job.status = TranscriptStatus.SUMMARIZING
+    job.stage_detail = "AI Summarizer Agent queued..."
+    db.commit()
+    db.refresh(job)
+    return _job_read(job)
+
+
 @router.post("/transcripts/{job_id}/retry", response_model=TranscriptJobRead, status_code=status.HTTP_202_ACCEPTED)
 def retry_transcript_job(
     job_id: UUID,
@@ -301,7 +470,7 @@ def retry_transcript_job(
     job = db.get(TranscriptJob, job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transcript job not found.")
-    if job.status not in {TranscriptStatus.FAILED, TranscriptStatus.COMPLETED}:
+    if job.status not in {TranscriptStatus.FAILED, TranscriptStatus.COMPLETED, TranscriptStatus.CANCELLED}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This job is already running.")
     job.status = TranscriptStatus.PENDING
     job.progress = 0
@@ -320,12 +489,42 @@ def export_transcript(
     db: Session = Depends(get_db),
     _: object = Depends(require_operator),
     __: None = Depends(rate_limit("transcript-export", 60, 60)),
-) -> FileResponse:
-    if export_format not in {"txt", "srt", "vtt", "json"}:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unsupported export format.")
+) -> Response:
     job = db.get(TranscriptJob, job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transcript job not found.")
+
+    # 1. AI Summary Markdown export
+    if export_format == "summary_md":
+        content = job.summary_markdown or f"# Summary: {job.title}\n\nNo AI summary generated."
+        return Response(
+            content=content,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{job.video_id}_summary.md"'},
+        )
+
+    # 2. AI Summary JSON export
+    if export_format == "summary_json":
+        content = json.dumps(job.summary_json or {}, indent=2, ensure_ascii=False)
+        return Response(
+            content=content,
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{job.video_id}_summary.json"'},
+        )
+
+    # 3. Clean Text export
+    if export_format == "clean_txt":
+        content = job.clean_transcript_text or job.transcript_text or ""
+        return Response(
+            content=content,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{job.video_id}_cleaned.txt"'},
+        )
+
+    # 4. Standard file exports (txt, srt, vtt, json)
+    if export_format not in {"txt", "srt", "vtt", "json"}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unsupported export format.")
+
     path_value = (job.artifact_paths or {}).get(export_format)
     path = Path(path_value) if path_value else None
     if not path or not path.is_file():

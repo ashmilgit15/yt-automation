@@ -246,7 +246,9 @@ export async function createPlaylistBatch(options: CreatePlaylistBatchOptions): 
       authorised_to_process: true,
       engine: options.engine ?? 'local_whisper',
       language_code: options.language_code ?? 'unknown',
-      mode: options.mode ?? 'transcribe'
+      mode: options.mode ?? 'transcribe',
+      enable_ai_cleanup: options.enable_ai_cleanup ?? false,
+      enable_ai_summary: options.enable_ai_summary ?? false,
     });
     return response.data;
   } catch (error) {
@@ -261,7 +263,9 @@ export async function createSingleTranscriptJob(options: CreateSingleTranscriptO
       authorised_to_process: true,
       engine: options.engine ?? 'local_whisper',
       language_code: options.language_code ?? 'unknown',
-      mode: options.mode ?? 'transcribe'
+      mode: options.mode ?? 'transcribe',
+      enable_ai_cleanup: options.enable_ai_cleanup ?? false,
+      enable_ai_summary: options.enable_ai_summary ?? false,
     });
     return response.data;
   } catch (error) {
@@ -279,7 +283,7 @@ export async function fetchTranscriptJob(jobId: string): Promise<TranscriptJob> 
   return response.data;
 }
 
-export async function fetchRecentTranscriptJobs(limit = 30): Promise<TranscriptJob[]> {
+export async function fetchRecentTranscriptJobs(limit = 50): Promise<TranscriptJob[]> {
   const response = await api.get<TranscriptJob[]>('/transcripts/recent', {
     params: { limit }
   });
@@ -295,7 +299,82 @@ export async function retryTranscriptJob(jobId: string): Promise<TranscriptJob> 
   }
 }
 
-export function transcriptExportUrl(jobId: string, format: 'txt' | 'srt' | 'vtt' | 'json'): string {
+export async function pauseTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/pause`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function resumeTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/resume`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function cancelTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/cancel`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function pausePlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/pause`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function resumePlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/resume`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function cancelPlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/cancel`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function runAiCleaner(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/run-cleaner`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function runAiSummarizer(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/run-summarizer`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export function transcriptExportUrl(
+  jobId: string,
+  format: 'txt' | 'srt' | 'vtt' | 'json' | 'clean_txt' | 'clean_srt' | 'clean_vtt' | 'summary_md' | 'summary_json'
+): string {
   return `${baseURL}/transcripts/${jobId}/export/${format}`;
 }
 

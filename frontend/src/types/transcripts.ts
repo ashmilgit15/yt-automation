@@ -2,11 +2,21 @@ export type TranscriptStatus =
   | 'PENDING'
   | 'ACQUIRING'
   | 'TRANSCRIBING'
+  | 'CLEANING'
+  | 'SUMMARIZING'
   | 'EXPORTING'
+  | 'PAUSED'
   | 'COMPLETED'
-  | 'FAILED';
+  | 'FAILED'
+  | 'CANCELLED';
 
-export type PlaylistStatus = 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'PARTIAL';
+export type PlaylistStatus =
+  | 'QUEUED'
+  | 'PROCESSING'
+  | 'PAUSED'
+  | 'COMPLETED'
+  | 'PARTIAL'
+  | 'CANCELLED';
 
 export type TranscriptionEngine = 'local_whisper' | 'sarvam' | 'groq';
 
@@ -60,6 +70,22 @@ export interface PlaylistAnalysis {
   videos: PlaylistVideo[];
 }
 
+export interface ChapterItem {
+  start_seconds: number;
+  timestamp_label: string;
+  title: string;
+  summary: string;
+}
+
+export interface TranscriptSummaryData {
+  executive_summary?: string;
+  key_highlights?: string[];
+  action_items?: string[];
+  chapters?: ChapterItem[];
+  key_quotes?: string[];
+  sentiment_tone?: string;
+}
+
 export interface TranscriptJob extends PlaylistVideo {
   id: string;
   playlist_batch_id?: string | null;
@@ -69,8 +95,14 @@ export interface TranscriptJob extends PlaylistVideo {
   stage_detail?: string | null;
   language: string | null;
   mode?: SarvamMode | null;
+  enable_ai_cleanup?: boolean;
+  enable_ai_summary?: boolean;
   transcript_text: string | null;
   segments: Array<{ start: number; end: number; text: string; words?: Array<{ start: number; end: number; word: string }> }> | null;
+  clean_transcript_text?: string | null;
+  clean_segments?: Array<{ start: number; end: number; text: string }> | null;
+  summary_json?: TranscriptSummaryData | null;
+  summary_markdown?: string | null;
   error_summary: string | null;
   created_at: string;
   updated_at: string;
@@ -86,6 +118,9 @@ export interface PlaylistBatch {
   total_videos: number;
   completed_videos: number;
   failed_videos: number;
+  enable_ai_cleanup?: boolean;
+  enable_ai_summary?: boolean;
+  batch_summary_markdown?: string | null;
   created_at: string;
   updated_at: string;
   jobs: TranscriptJob[];
@@ -101,6 +136,8 @@ export interface PlaylistBatchSummary {
   total_videos: number;
   completed_videos: number;
   failed_videos: number;
+  enable_ai_cleanup?: boolean;
+  enable_ai_summary?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -111,6 +148,8 @@ export interface CreatePlaylistBatchOptions {
   engine?: TranscriptionEngine;
   language_code?: string;
   mode?: SarvamMode;
+  enable_ai_cleanup?: boolean;
+  enable_ai_summary?: boolean;
 }
 
 export interface CreateSingleTranscriptOptions {
@@ -118,4 +157,6 @@ export interface CreateSingleTranscriptOptions {
   engine?: TranscriptionEngine;
   language_code?: string;
   mode?: SarvamMode;
+  enable_ai_cleanup?: boolean;
+  enable_ai_summary?: boolean;
 }

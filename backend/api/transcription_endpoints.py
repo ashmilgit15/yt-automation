@@ -24,6 +24,7 @@ from backend.models.transcription_schemas import (
     PlaylistBatchSummaryRead,
     PlaylistCreateRequest,
     PlaylistVideoRead,
+    SingleVideoCreateRequest,
     TranscriptJobRead,
 )
 from backend.services.youtube_playlist import YouTubePlaylistService

@@ -463,7 +463,41 @@ class TestPlaylistZipExport(unittest.TestCase):
             self.assertIn("Transcripts/02 - Video Number 2.txt", namelist)
             self.assertIn("Transcripts/03 - Video Number 3.txt", namelist)
 
+    def test_subtitle_format_timestamp_and_build_helpers_robustness(self):
+        from backend.services.subtitles import format_timestamp, build_srt, build_vtt
+
+        # Test format_timestamp edge cases
+        self.assertEqual(format_timestamp(0.0), "00:00:00,000")
+        self.assertEqual(format_timestamp(12.345), "00:00:12,345")
+        self.assertEqual(format_timestamp(3661.5, separator="."), "01:01:01.500")
+        self.assertEqual(format_timestamp(None), "00:00:00,000")
+        self.assertEqual(format_timestamp(float("nan")), "00:00:00,000")
+        self.assertEqual(format_timestamp(float("inf")), "00:00:00,000")
+        self.assertEqual(format_timestamp(float("-inf")), "00:00:00,000")
+        self.assertEqual(format_timestamp(-50), "00:00:00,000")
+        self.assertEqual(format_timestamp("not-a-number"), "00:00:00,000")
+
+        # Test build_srt with corrupted / non-dict entries and inverted timestamps
+        corrupted_segments = [
+            {"start": 0.0, "end": 2.0, "text": "Valid segment 1"},
+            None,  # Should be skipped without breaking sequence index
+            "string_segment",  # Should be skipped
+            {"start": 10.0, "end": 5.0, "text": "Inverted segment 2"},  # end < start
+            {"start": float("inf"), "end": float("nan"), "text": "Inf segment 3"},
+        ]
+        srt_output = build_srt(corrupted_segments)
+        self.assertIn("1\n00:00:00,000 --> 00:00:02,000\nValid segment 1", srt_output)
+        self.assertIn("2\n00:00:10,000 --> 00:00:12,000\nInverted segment 2", srt_output)
+        self.assertIn("3\n00:00:00,000 --> 00:00:02,000\nInf segment 3", srt_output)
+
+        # Test build_vtt
+        vtt_output = build_vtt(corrupted_segments)
+        self.assertTrue(vtt_output.startswith("WEBVTT"))
+        self.assertIn("00:00:00.000 --> 00:00:02.000\nValid segment 1", vtt_output)
+        self.assertIn("00:00:10.000 --> 00:00:12.000\nInverted segment 2", vtt_output)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

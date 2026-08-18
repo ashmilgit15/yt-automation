@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +13,17 @@ def format_timestamp(seconds_value: float | Any, separator: str = ",") -> str:
     """
     try:
         seconds_value = float(seconds_value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         seconds_value = 0.0
 
-    if seconds_value < 0 or seconds_value != seconds_value:
+    if seconds_value < 0 or seconds_value != seconds_value or math.isinf(seconds_value):
         seconds_value = 0.0
 
-    total_milliseconds = int(round(seconds_value * 1000))
+    try:
+        total_milliseconds = int(round(seconds_value * 1000))
+    except (ValueError, TypeError, OverflowError):
+        total_milliseconds = 0
+
     milliseconds = total_milliseconds % 1000
     total_seconds = total_milliseconds // 1000
     seconds = total_seconds % 60
@@ -32,28 +37,34 @@ def format_timestamp(seconds_value: float | Any, separator: str = ",") -> str:
 def build_srt(segments: list[dict[str, Any]]) -> str:
     """Generate RFC/SubRip compliant SRT subtitles."""
     lines: list[str] = []
-    for index, segment in enumerate(segments, start=1):
+    sub_idx = 1
+    for segment in segments:
         if not isinstance(segment, dict):
             continue
         start_val = segment.get("start")
         try:
             start_num = float(start_val) if start_val is not None else 0.0
-        except (ValueError, TypeError):
+            if start_num < 0 or math.isnan(start_num) or math.isinf(start_num):
+                start_num = 0.0
+        except (ValueError, TypeError, OverflowError):
             start_num = 0.0
         end_val = segment.get("end")
         try:
             end_num = float(end_val) if end_val is not None else start_num + 2.0
-        except (ValueError, TypeError):
+            if end_num < start_num or math.isnan(end_num) or math.isinf(end_num):
+                end_num = start_num + 2.0
+        except (ValueError, TypeError, OverflowError):
             end_num = start_num + 2.0
 
         start_str = format_timestamp(start_num, separator=",")
         end_str = format_timestamp(end_num, separator=",")
         text = str(segment.get("text", "")).strip()
 
-        lines.append(str(index))
+        lines.append(str(sub_idx))
         lines.append(f"{start_str} --> {end_str}")
         lines.append(text)
         lines.append("")
+        sub_idx += 1
     return "\n".join(lines)
 
 
@@ -66,12 +77,16 @@ def build_vtt(segments: list[dict[str, Any]]) -> str:
         start_val = segment.get("start")
         try:
             start_num = float(start_val) if start_val is not None else 0.0
-        except (ValueError, TypeError):
+            if start_num < 0 or math.isnan(start_num) or math.isinf(start_num):
+                start_num = 0.0
+        except (ValueError, TypeError, OverflowError):
             start_num = 0.0
         end_val = segment.get("end")
         try:
             end_num = float(end_val) if end_val is not None else start_num + 2.0
-        except (ValueError, TypeError):
+            if end_num < start_num or math.isnan(end_num) or math.isinf(end_num):
+                end_num = start_num + 2.0
+        except (ValueError, TypeError, OverflowError):
             end_num = start_num + 2.0
 
         start_str = format_timestamp(start_num, separator=".")

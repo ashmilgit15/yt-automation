@@ -2,6 +2,14 @@ import axios from 'axios';
 
 import type { OperatorLoginPayload, OperatorSession } from '@/types/auth';
 import type { YouTubeConnectionStatus } from '@/types/integrations';
+import type {
+  CreatePlaylistBatchOptions,
+  CreateSingleTranscriptOptions,
+  PlaylistAnalysis,
+  PlaylistBatch,
+  PlaylistBatchSummary,
+  TranscriptJob
+} from '@/types/transcripts';
 import type { BulkCreateJobPayload, BulkJobCreateResponse, CreateJobPayload, JobCollectionResponse, SourceRemixJobCreatePayload, VideoJobDetail } from '@/types/jobs';
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000/api/v1';
@@ -209,3 +217,180 @@ export function buildYouTubeOauthStartUrl(channelLabel = 'default'): string {
   url.searchParams.set('channel_label', channelLabel);
   return url.toString();
 }
+
+export async function analysePlaylist(playlist_url: string): Promise<PlaylistAnalysis> {
+  try {
+    const response = await api.post<PlaylistAnalysis>('/playlists/analyze', { playlist_url });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function fetchPlaylistBatches(limit = 15): Promise<PlaylistBatchSummary[]> {
+  try {
+    const response = await api.get<PlaylistBatchSummary[]>('/playlists', {
+      params: { limit }
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function createPlaylistBatch(options: CreatePlaylistBatchOptions): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>('/playlists', {
+      playlist_url: options.playlist_url,
+      selected_video_ids: options.selected_video_ids,
+      authorised_to_process: true,
+      engine: options.engine ?? 'local_whisper',
+      language_code: options.language_code ?? 'unknown',
+      mode: options.mode ?? 'transcribe',
+      enable_ai_cleanup: options.enable_ai_cleanup ?? false,
+      enable_ai_summary: options.enable_ai_summary ?? false,
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function createSingleTranscriptJob(options: CreateSingleTranscriptOptions): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>('/transcripts/single', {
+      video_url: options.video_url,
+      authorised_to_process: true,
+      engine: options.engine ?? 'local_whisper',
+      language_code: options.language_code ?? 'unknown',
+      mode: options.mode ?? 'transcribe',
+      enable_ai_cleanup: options.enable_ai_cleanup ?? false,
+      enable_ai_summary: options.enable_ai_summary ?? false,
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function fetchPlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  const response = await api.get<PlaylistBatch>(`/playlists/${batchId}`);
+  return response.data;
+}
+
+export async function fetchTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  const response = await api.get<TranscriptJob>(`/transcripts/${jobId}`);
+  return response.data;
+}
+
+export async function fetchRecentTranscriptJobs(limit = 50): Promise<TranscriptJob[]> {
+  const response = await api.get<TranscriptJob[]>('/transcripts/recent', {
+    params: { limit }
+  });
+  return response.data;
+}
+
+export async function retryTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/retry`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function pauseTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/pause`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function resumeTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/resume`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function cancelTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/cancel`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function pausePlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/pause`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function resumePlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/resume`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function cancelPlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/cancel`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function runAiCleaner(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/run-cleaner`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function runAiSummarizer(jobId: string): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/run-summarizer`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function deleteTranscriptJob(jobId: string): Promise<void> {
+  try {
+    await api.delete(`/transcripts/${jobId}`);
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function deletePlaylistBatch(batchId: string): Promise<void> {
+  try {
+    await api.delete(`/playlists/${batchId}`);
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export function transcriptExportUrl(
+  jobId: string,
+  format: 'txt' | 'srt' | 'vtt' | 'json' | 'clean_txt' | 'clean_srt' | 'clean_vtt' | 'summary_md' | 'summary_json'
+): string {
+  return `${baseURL}/transcripts/${jobId}/export/${format}`;
+}
+

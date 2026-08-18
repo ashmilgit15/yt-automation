@@ -27,7 +27,7 @@ const nextConfig = {
           {
             key: 'Content-Security-Policy',
             value:
-              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://images.pexels.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://localhost:8000 http://127.0.0.1:8000; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://images.pexels.com https://*.ytimg.com https://i.ytimg.com https://img.youtube.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' http://localhost:8000 http://127.0.0.1:8000; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
           }
         ]
       }
@@ -42,6 +42,14 @@ const nextConfig = {
       {
         protocol: 'https',
         hostname: 'player.vimeo.com'
+      },
+      {
+        protocol: 'https',
+        hostname: 'i.ytimg.com'
+      },
+      {
+        protocol: 'https',
+        hostname: 'img.youtube.com'
       }
     ]
   }

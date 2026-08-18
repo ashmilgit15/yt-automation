@@ -15,6 +15,10 @@ from backend.services.publisher import PublisherService
 from backend.services.researcher import ResearcherService
 from backend.services.source_remix import SourceRemixService
 from backend.services.transcriber import TranscriberService
+from backend.models.transcription_models import PlaylistBatch, PlaylistStatus, TranscriptJob, TranscriptStatus
+from backend.services.transcript_cleaner import TranscriptCleanerService
+from backend.services.transcript_summarizer import TranscriptSummarizerService
+from backend.services.transcription_manager import TranscriptionManager
 from backend.services.utils import stacktrace_from_exception
 from backend.services.visual_curator import VisualCuratorService
 from backend.worker.celery_app import celery_app
@@ -56,6 +60,243 @@ def _fail_job(db: Session, job: VideoJob, exc: Exception) -> None:
     job.error_log = stacktrace_from_exception(exc)
     db.add(job)
     db.commit()
+
+
+def _refresh_playlist_progress(db: Session, batch: PlaylistBatch | None) -> None:
+    if not batch:
+        return
+    jobs = list(
+        db.query(TranscriptJob).filter(TranscriptJob.playlist_batch_id == batch.id).all()
+    )
+    batch.completed_videos = sum(job.status == TranscriptStatus.COMPLETED for job in jobs)
+    batch.failed_videos = sum(job.status == TranscriptStatus.FAILED for job in jobs)
+    active = any(job.status in {TranscriptStatus.ACQUIRING, TranscriptStatus.TRANSCRIBING, TranscriptStatus.EXPORTING} for job in jobs)
+    pending = any(job.status == TranscriptStatus.PENDING for job in jobs)
+    if batch.completed_videos + batch.failed_videos == batch.total_videos:
+        batch.status = PlaylistStatus.PARTIAL if batch.failed_videos else PlaylistStatus.COMPLETED
+    elif active or pending:
+        batch.status = PlaylistStatus.PROCESSING
+    db.add(batch)
+    db.commit()
+
+
+@celery_app.task(bind=True, name="backend.worker.tasks.transcribe_playlist_item")
+def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        job = db.get(TranscriptJob, UUID(transcript_job_id))
+        if not job:
+            raise RuntimeError("Transcript job was not found.")
+        if job.status in {TranscriptStatus.CANCELLED, TranscriptStatus.PAUSED, TranscriptStatus.COMPLETED}:
+            return {"job_id": transcript_job_id, "status": job.status.value}
+
+        batch = db.get(PlaylistBatch, job.playlist_batch_id) if job.playlist_batch_id else None
+        manager = TranscriptionManager()
+
+        def _is_stopped() -> bool:
+            db.refresh(job)
+            return job.status in {TranscriptStatus.CANCELLED, TranscriptStatus.PAUSED}
+
+        def _update_progress(pct: int, detail: str) -> None:
+            if not _is_stopped():
+                job.progress = pct
+                job.stage_detail = detail
+                db.add(job)
+                db.commit()
+
+        try:
+            if _is_stopped():
+                return {"job_id": transcript_job_id, "status": job.status.value}
+
+            job.status = TranscriptStatus.ACQUIRING
+            job.progress = 10
+            job.stage_detail = "Acquiring audio from YouTube..."
+            job.error_log = None
+            db.add(job)
+            db.commit()
+            if batch:
+                _refresh_playlist_progress(db, batch)
+
+            audio_path = manager.acquire_audio(
+                engine_name=job.engine,
+                job_id=str(job.id),
+                video_url=job.video_url,
+            )
+
+            if _is_stopped():
+                return {"job_id": transcript_job_id, "status": job.status.value}
+
+            job.status = TranscriptStatus.TRANSCRIBING
+            job.progress = 20
+            job.stage_detail = f"Transcribing using {job.engine} engine..."
+            db.add(job)
+            db.commit()
+
+            result = manager.transcribe(
+                engine_name=job.engine,
+                job_id=str(job.id),
+                audio_path=audio_path,
+                language_code=job.language or "unknown",
+                mode=job.mode or "transcribe",
+                progress_callback=_update_progress,
+            )
+
+            job.language = result["language"]
+            job.transcript_text = result["transcript_text"]
+            job.segments_json = result["segments"]
+            job.artifact_paths = result["artifact_paths"]
+            db.add(job)
+            db.commit()
+
+            # AI Cleanup Agent (if enabled)
+            if job.enable_ai_cleanup and not _is_stopped():
+                job.status = TranscriptStatus.CLEANING
+                job.progress = 85
+                job.stage_detail = "AI Cleanup Agent: Removing stutters, filler words & formatting..."
+                db.add(job)
+                db.commit()
+                try:
+                    clean_res = TranscriptCleanerService().clean_transcript(
+                        raw_text=job.transcript_text or "",
+                        segments=job.segments_json,
+                        language=job.language,
+                    )
+                    job.clean_transcript_text = clean_res.get("clean_transcript_text")
+                    job.clean_segments_json = clean_res.get("clean_segments")
+                    db.add(job)
+                    db.commit()
+                except Exception as clean_err:
+                    job.stage_detail = f"AI Cleanup skipped: {str(clean_err)[:60]}"
+                    db.add(job)
+                    db.commit()
+
+            # AI Summarizer Agent (if enabled)
+            if job.enable_ai_summary and not _is_stopped():
+                job.status = TranscriptStatus.SUMMARIZING
+                job.progress = 92
+                job.stage_detail = "AI Summarizer Agent: Extracting executive summary & chapters..."
+                db.add(job)
+                db.commit()
+                try:
+                    text_for_summary = job.clean_transcript_text or job.transcript_text or ""
+                    segments_for_summary = job.clean_segments_json or job.segments_json
+                    sum_res = TranscriptSummarizerService().summarize_video(
+                        title=job.title,
+                        transcript_text=text_for_summary,
+                        segments=segments_for_summary,
+                        language=job.language,
+                    )
+                    job.summary_json = sum_res.get("summary_json")
+                    job.summary_markdown = sum_res.get("summary_markdown")
+                    db.add(job)
+                    db.commit()
+                except Exception as sum_err:
+                    job.stage_detail = f"AI Summary skipped: {str(sum_err)[:60]}"
+                    db.add(job)
+                    db.commit()
+
+            if _is_stopped():
+                return {"job_id": transcript_job_id, "status": job.status.value}
+
+            job.status = TranscriptStatus.COMPLETED
+            job.progress = 100
+            job.stage_detail = "Completed successfully."
+            db.add(job)
+            db.commit()
+            if batch:
+                _refresh_playlist_progress(db, batch)
+                if batch.enable_ai_summary and batch.completed_videos == batch.total_videos and not batch.batch_summary_markdown:
+                    try:
+                        all_jobs = db.query(TranscriptJob).filter(TranscriptJob.playlist_batch_id == batch.id).all()
+                        v_sums = [
+                            {"title": j.title, "summary_markdown": j.summary_markdown or j.transcript_text or ""}
+                            for j in all_jobs
+                        ]
+                        batch.batch_summary_markdown = TranscriptSummarizerService().summarize_playlist(
+                            playlist_title=batch.title or "Playlist",
+                            video_summaries=v_sums,
+                        )
+                        db.add(batch)
+                        db.commit()
+                    except Exception:
+                        pass
+
+            return {"job_id": transcript_job_id, "status": job.status.value}
+        except Exception as exc:
+            if not _is_stopped():
+                job.status = TranscriptStatus.FAILED
+                job.progress = 0
+                job.stage_detail = f"Failed: {str(exc)[:120]}"
+                job.error_log = stacktrace_from_exception(exc)
+                db.add(job)
+                db.commit()
+                if batch:
+                    _refresh_playlist_progress(db, batch)
+            raise
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="backend.worker.tasks.run_ai_cleaner_task")
+def run_ai_cleaner_task(self: Task, transcript_job_id: str) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        job = db.get(TranscriptJob, UUID(transcript_job_id))
+        if not job or not job.transcript_text:
+            raise RuntimeError("Transcript job or text was not found.")
+        job.status = TranscriptStatus.CLEANING
+        job.stage_detail = "AI Cleanup Agent: Cleaning transcript stutters and disfluencies..."
+        db.add(job)
+        db.commit()
+
+        clean_res = TranscriptCleanerService().clean_transcript(
+            raw_text=job.transcript_text,
+            segments=job.segments_json,
+            language=job.language,
+        )
+        job.clean_transcript_text = clean_res.get("clean_transcript_text")
+        job.clean_segments_json = clean_res.get("clean_segments")
+        job.enable_ai_cleanup = True
+        job.status = TranscriptStatus.COMPLETED
+        job.stage_detail = "AI Cleanup completed."
+        db.add(job)
+        db.commit()
+        return {"job_id": transcript_job_id, "status": "COMPLETED"}
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name="backend.worker.tasks.run_ai_summarizer_task")
+def run_ai_summarizer_task(self: Task, transcript_job_id: str) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        job = db.get(TranscriptJob, UUID(transcript_job_id))
+        if not job or (not job.transcript_text and not job.clean_transcript_text):
+            raise RuntimeError("Transcript job or text was not found.")
+        job.status = TranscriptStatus.SUMMARIZING
+        job.stage_detail = "AI Summarizer Agent: Generating executive summary & chapters..."
+        db.add(job)
+        db.commit()
+
+        text_for_summary = job.clean_transcript_text or job.transcript_text or ""
+        segments_for_summary = job.clean_segments_json or job.segments_json
+        sum_res = TranscriptSummarizerService().summarize_video(
+            title=job.title,
+            transcript_text=text_for_summary,
+            segments=segments_for_summary,
+            language=job.language,
+        )
+        job.summary_json = sum_res.get("summary_json")
+        job.summary_markdown = sum_res.get("summary_markdown")
+        job.enable_ai_summary = True
+        job.status = TranscriptStatus.COMPLETED
+        job.stage_detail = "AI Summary completed."
+        db.add(job)
+        db.commit()
+        return {"job_id": transcript_job_id, "status": "COMPLETED"}
+    finally:
+        db.close()
+
 
 
 @celery_app.task(bind=True, name="backend.worker.tasks.generate_video_pipeline")

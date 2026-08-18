@@ -23,3 +23,6 @@ backend/assets/*.wav
 backend/assets/*.m4a
 dist/
 build/
+*.tsbuildinfo
+.swc/
+

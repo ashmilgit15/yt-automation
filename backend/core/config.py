@@ -46,11 +46,24 @@ class Settings(BaseSettings):
     gemini_model: str = Field(default="gemini-2.5-flash")
     openrouter_api_key: str | None = Field(default=None)
     openrouter_model: str = Field(default="nvidia/nemotron-3-super-120b-a12b:free")
+    hackclub_api_key: str | None = Field(default=None)
+    hackclub_base_url: str = Field(default="https://ai.hackclub.com/proxy/v1")
+    hackclub_model: str = Field(default="google/gemini-3.7-flash")
     firecrawl_api_key: str | None = Field(default=None)
     firecrawl_base_url: str = Field(default="https://api.firecrawl.dev")
     groq_api_key: str | None = Field(default=None)
     groq_whisper_model: str = Field(default="whisper-large-v3-turbo")
     pexels_api_key: str | None = Field(default=None)
+
+    whisper_model: str = Field(default="deepdml/faster-whisper-large-v3-turbo-ct2")
+    whisper_device: str = Field(default="auto")
+    whisper_compute_type: str = Field(default="int8_float16")
+    transcription_max_playlist_items: int = Field(default=200, ge=1, le=200)
+
+    sarvam_api_key: str | None = Field(default=None)
+    sarvam_model: str = Field(default="saaras:v3")
+    sarvam_default_language: str = Field(default="unknown")
+    sarvam_mode: str = Field(default="transcribe")
 
     quality_gate_threshold: int = Field(default=7)
     kokoro_voice: str = Field(default="af_heart")
@@ -86,6 +99,7 @@ class Settings(BaseSettings):
 
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
 
 
 @lru_cache(maxsize=1)

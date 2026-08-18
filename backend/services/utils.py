@@ -56,11 +56,14 @@ def maybe_sleep_for_rate_limit(headers: dict[str, Any]) -> None:
             return
 
 
+import random
+
+
 def call_with_backoff(
     operation: RetryCallable,
     *,
-    retries: int = 4,
-    initial_delay: float = 1.0,
+    retries: int = 5,
+    initial_delay: float = 1.5,
     retriable_statuses: set[int] | None = None,
 ) -> Any:
     retriable = retriable_statuses or {408, 409, 425, 429, 500, 502, 503, 504}
@@ -76,6 +79,8 @@ def call_with_backoff(
             status_code = exc.response.status_code if exc.response is not None else None
             if status_code not in retriable or attempt == retries:
                 raise
+            if status_code == 429:
+                delay = max(delay, 2.5) * 1.5 + random.uniform(0.2, 0.8)
             if exc.response is not None:
                 maybe_sleep_for_rate_limit(dict(exc.response.headers))
         except requests.RequestException:
@@ -91,14 +96,13 @@ def call_with_backoff(
             ):
                 if attempt == retries:
                     raise
-                # Force a larger delay for rate limit hits if needed, Gemini often needs 15s
                 delay = max(delay, 16.0)
             else:
                 if attempt == retries:
                     raise
 
         time.sleep(delay)
-        delay *= 2
+        delay = delay * 1.8 + random.uniform(0.1, 0.5)
 
     raise RuntimeError("Backoff loop exited unexpectedly")
 

@@ -6,6 +6,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from backend.api.endpoints import router
+from backend.api.transcription_endpoints import router as transcription_router
 from backend.api.middleware import RequestSizeLimitMiddleware, SecurityHeadersMiddleware
 from backend.core.config import get_settings
 from backend.core.database import init_db
@@ -63,3 +64,4 @@ def healthcheck() -> dict[str, str]:
 
 
 app.include_router(router, prefix=settings.api_v1_prefix)
+app.include_router(transcription_router, prefix=settings.api_v1_prefix)

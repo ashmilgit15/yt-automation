@@ -1,0 +1,14 @@
+# Use this override on the machine with an NVIDIA GPU:
+# docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+services:
+  celery-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -23,3 +23,4 @@ tenacity>=9.0.0
 python-dotenv>=1.0.1
 cryptography>=44.0.0
 yt-dlp>=2025.3.31
+faster-whisper>=1.1.1

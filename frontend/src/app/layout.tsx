@@ -17,9 +17,9 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'YouTube Automation Factory',
+  title: 'Bulk YouTube Transcriber',
   description: 'Dashboard for an AI-driven video automation pipeline.',
-  applicationName: 'YouTube Automation Factory'
+  applicationName: 'Bulk YouTube Transcriber'
 };
 
 export const viewport: Viewport = {

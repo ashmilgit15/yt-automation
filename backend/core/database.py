@@ -49,6 +49,8 @@ def init_db() -> None:
         "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS clean_segments_json JSONB;",
         "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS summary_json JSONB;",
         "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS summary_markdown TEXT;",
+        "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS failure_type VARCHAR(64);",
+        "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS is_retryable BOOLEAN DEFAULT TRUE;",
         "ALTER TABLE transcript_jobs ALTER COLUMN playlist_batch_id DROP NOT NULL;",
         "ALTER TYPE playlist_batch_status ADD VALUE IF NOT EXISTS 'PAUSED';",
         "ALTER TYPE playlist_batch_status ADD VALUE IF NOT EXISTS 'CANCELLED';",

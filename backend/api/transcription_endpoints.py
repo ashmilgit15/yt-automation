@@ -62,6 +62,8 @@ def _job_read(job: TranscriptJob, *, include_transcript: bool = True) -> Transcr
         summary_json=job.summary_json if include_transcript else None,
         summary_markdown=job.summary_markdown if include_transcript else None,
         error_summary=(job.error_log or "")[-300:] or None,
+        failure_type=job.failure_type,
+        is_retryable=job.is_retryable if job.is_retryable is not None else True,
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
@@ -427,20 +429,27 @@ def retry_failed_playlist_batch_items(
     db: Session = Depends(get_db),
     _: object = Depends(require_operator),
 ) -> PlaylistBatchRead:
-    """Retries all failed video transcription jobs in the specified playlist batch."""
+    """Retries transient failed video transcription jobs in the playlist batch, skipping permanent failures."""
     batch, jobs = _load_batch(db, batch_id)
     failed_jobs = [job for job in jobs if job.status == TranscriptStatus.FAILED]
 
     if not failed_jobs:
         return _batch_read(batch, jobs)
 
-    batch.status = PlaylistStatus.PROCESSING
-    batch.failed_videos = max(0, batch.failed_videos - len(failed_jobs))
+    retryable_jobs = [job for job in failed_jobs if job.is_retryable is not False]
+    if not retryable_jobs:
+        # All failed jobs are permanent non-retryable errors (e.g. DRM, unavailable)
+        return _batch_read(batch, jobs)
 
-    for job in failed_jobs:
+    batch.status = PlaylistStatus.PROCESSING
+    batch.failed_videos = max(0, batch.failed_videos - len(retryable_jobs))
+
+    for job in retryable_jobs:
         job.status = TranscriptStatus.PENDING
         job.progress = 0
-        job.stage_detail = "Queued for automatic retry..."
+        job.stage_detail = "Queued for retry..."
+        job.failure_type = None
+        job.is_retryable = True
         job.error_log = None
         db.add(job)
         transcribe_playlist_item.delay(str(job.id))
@@ -505,6 +514,8 @@ def retry_transcript_job(
     job.status = TranscriptStatus.PENDING
     job.progress = 0
     job.stage_detail = "Queued for retry..."
+    job.failure_type = None
+    job.is_retryable = True
     job.error_log = None
     db.commit()
     db.refresh(job)

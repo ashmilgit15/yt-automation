@@ -81,6 +81,8 @@ class TranscriptJobRead(PlaylistVideoRead):
     summary_json: dict[str, Any] | None = None
     summary_markdown: str | None = None
     error_summary: str | None = None
+    failure_type: str | None = None
+    is_retryable: bool | None = None
     created_at: datetime
     updated_at: datetime
 

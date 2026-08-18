@@ -1,10 +1,15 @@
 import io
+import os
 import re
 import unittest
 import uuid
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("SESSION_SECRET", "test-secret-key-1234567890123456")
+os.environ.setdefault("OPERATOR_PASSWORD", "testpassword123")
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine

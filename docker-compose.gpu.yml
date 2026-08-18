@@ -5,9 +5,14 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile.gpu
+    mem_limit: 8g
+    mem_reservation: 2g
     deploy:
       resources:
+        limits:
+          memory: 8g
         reservations:
+          memory: 2g
           devices:
             - driver: nvidia
               count: all

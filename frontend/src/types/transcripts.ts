@@ -104,6 +104,8 @@ export interface TranscriptJob extends PlaylistVideo {
   summary_json?: TranscriptSummaryData | null;
   summary_markdown?: string | null;
   error_summary: string | null;
+  failure_type?: string | null;
+  is_retryable?: boolean | null;
   created_at: string;
   updated_at: string;
 }

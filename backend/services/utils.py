@@ -120,19 +120,76 @@ def run_command(
 
 
 def ffprobe_duration(media_path: Path) -> float:
-    probe = run_command(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(media_path),
-        ]
-    )
-    return float(probe.stdout.strip())
+    try:
+        probe = run_command(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(media_path),
+            ]
+        )
+        val = probe.stdout.strip()
+        return float(val) if val else 0.0
+    except Exception:
+        return 0.0
+
+
+def verify_audio_file(audio_path: Path, min_size: int = 10_000, min_duration: float = 0.5) -> tuple[bool, str]:
+    """
+    Validates that a downloaded audio file is physically intact, non-empty,
+    contains a recognizable audio stream, and has non-zero duration.
+    Returns (is_valid, error_reason).
+    """
+    if not audio_path.is_file():
+        return False, "File does not exist on disk."
+
+    size = audio_path.stat().st_size
+    if size < min_size:
+        return False, f"File size ({size} bytes) is below the minimum threshold ({min_size} bytes)."
+
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type,codec_name:format=duration",
+                "-of",
+                "json",
+                str(audio_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if probe.returncode != 0:
+            return False, f"ffprobe failed to parse audio file (corrupt stream): {probe.stderr.strip()[:200]}"
+
+        data = json.loads(probe.stdout)
+        streams = data.get("streams", [])
+        audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+        if not audio_streams:
+            return False, "No valid audio stream detected in downloaded media container."
+
+        duration_val = (data.get("format") or {}).get("duration")
+        if duration_val is not None:
+            try:
+                dur = float(duration_val)
+                if dur < min_duration:
+                    return False, f"Audio duration ({dur:.2f}s) is below required minimum ({min_duration}s)."
+            except ValueError:
+                pass
+
+        return True, ""
+    except Exception as e:
+        return False, f"Audio validation error: {e}"
 
 
 def extract_json_payload(raw_text: str) -> Any:

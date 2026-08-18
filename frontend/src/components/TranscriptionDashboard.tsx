@@ -851,15 +851,35 @@ export function TranscriptionDashboard() {
                         </button>
 
                         {batch.failed_videos > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => handleRetryFailedBatch(batch.id)}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 transition shadow-sm"
-                            title="Automatically Retry All Failed Videos in this Batch"
-                          >
-                            <RefreshCw className="h-3.5 w-3.5" />
-                            <span>Retry Failed ({batch.failed_videos})</span>
-                          </button>
+                          <>
+                            {batch.jobs?.some((j) => j.status === 'FAILED' && j.is_retryable !== false) || !batch.jobs ? (
+                              <button
+                                type="button"
+                                onClick={() => handleRetryFailedBatch(batch.id)}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 transition shadow-sm"
+                                title="Automatically Retry Transient Failed Videos in this Batch"
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                <span>
+                                  Retry Failed (
+                                  {batch.jobs
+                                    ? batch.jobs.filter((j) => j.status === 'FAILED' && j.is_retryable !== false).length
+                                    : batch.failed_videos}
+                                  )
+                                </span>
+                              </button>
+                            ) : null}
+                            {batch.jobs?.some((j) => j.status === 'FAILED' && j.is_retryable === false) ? (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-xl border border-rose-500/20 bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-medium text-rose-300/80"
+                                title="Permanent failures (DRM, unavailable) cannot be transcribed and are excluded from retry"
+                              >
+                                🔒{' '}
+                                {batch.jobs.filter((j) => j.status === 'FAILED' && j.is_retryable === false).length} DRM /
+                                Unavailable
+                              </span>
+                            ) : null}
+                          </>
                         ) : null}
 
                         {batch.status === 'PROCESSING' || batch.status === 'QUEUED' ? (
@@ -1512,6 +1532,11 @@ function TranscriptRow({
                 📑 Summarized
               </span>
             ) : null}
+            {job.failure_type ? (
+              <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] text-rose-300 font-semibold border border-rose-500/30">
+                {job.failure_type.replace('_', ' ')}
+              </span>
+            ) : null}
           </div>
           <p className="mt-1 text-xs text-slate-400">
             {job.channel_title || 'Unknown channel'} · {durationLabel(job.duration_seconds)}
@@ -1631,13 +1656,29 @@ function TranscriptRow({
       ) : null}
 
       {job.status === 'FAILED' ? (
-        <button
-          type="button"
-          onClick={() => onRetry(job.id)}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-400/20 transition"
-        >
-          <RefreshCw className="h-3 w-3" /> Retry Task
-        </button>
+        job.is_retryable === false ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300">
+              🔒 Permanent failure ({job.failure_type ? job.failure_type.replace('_', ' ') : 'DRM / Unavailable'}). Auto-retry skipped.
+            </span>
+            <button
+              type="button"
+              onClick={() => onRetry(job.id)}
+              className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-amber-400/40 hover:text-amber-300 transition"
+              title="Force retry this task"
+            >
+              <RefreshCw className="h-3 w-3" /> Force Retry
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onRetry(job.id)}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-400/20 transition"
+          >
+            <RefreshCw className="h-3 w-3" /> Retry Task
+          </button>
+        )
       ) : null}
     </article>
   );

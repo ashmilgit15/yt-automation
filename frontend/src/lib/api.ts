@@ -394,3 +394,20 @@ export function transcriptExportUrl(
   return `${baseURL}/transcripts/${jobId}/export/${format}`;
 }
 
+export function playlistBatchZipUrl(batchId: string): string {
+  return `${baseURL}/playlists/${batchId}/export/zip`;
+}
+
+export async function downloadPlaylistBatchZip(batchId: string, customFilename?: string | null): Promise<void> {
+  const url = playlistBatchZipUrl(batchId);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  if (customFilename) {
+    anchor.download = customFilename.endsWith('.zip') ? customFilename : `${customFilename}.zip`;
+  }
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+}
+
+

@@ -25,4 +25,5 @@ dist/
 build/
 *.tsbuildinfo
 .swc/
+.agents/
 

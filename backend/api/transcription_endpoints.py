@@ -541,6 +541,117 @@ def export_transcript(
     )
 
 
+@router.get("/playlists/{batch_id}/export/zip")
+def export_playlist_zip(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+    __: None = Depends(rate_limit("playlist-export-zip", 30, 60)),
+) -> Response:
+    """Packages all completed transcripts in the playlist batch into a zip archive with clean titles."""
+    import io
+    import re
+    import zipfile
+
+    batch, jobs = _load_batch(db, batch_id)
+    completed_jobs = [
+        j
+        for j in jobs
+        if j.transcript_text
+        or (j.artifact_paths and len(j.artifact_paths) > 0)
+    ]
+
+    if not completed_jobs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No completed transcripts available in this batch to export.",
+        )
+
+    def _sanitize(text: str) -> str:
+        s = re.sub(r'[\\/*?:"<>|]', "", text or "")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s[:90] if s else "video"
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Master summary if available
+        if batch.batch_summary_markdown:
+            zf.writestr(
+                "00_MASTER_PLAYLIST_SUMMARY.md",
+                batch.batch_summary_markdown.encode("utf-8"),
+            )
+
+        for idx, job in enumerate(jobs):
+            if not job.transcript_text and not job.artifact_paths:
+                continue
+
+            pos_num = (job.position + 1) if job.position is not None else (idx + 1)
+            safe_title = _sanitize(job.title or job.video_id)
+            file_base = f"{pos_num:02d} - {safe_title}"
+
+            # 1. Main / Clean Transcript text
+            if job.clean_transcript_text:
+                zf.writestr(
+                    f"Clean_Transcripts/{file_base} (Clean).txt",
+                    job.clean_transcript_text.encode("utf-8"),
+                )
+            if job.transcript_text:
+                zf.writestr(
+                    f"Transcripts/{file_base}.txt",
+                    job.transcript_text.encode("utf-8"),
+                )
+
+            # 2. AI Summary Markdown
+            if job.summary_markdown:
+                zf.writestr(
+                    f"Summaries/{file_base} - Summary.md",
+                    job.summary_markdown.encode("utf-8"),
+                )
+
+            # 3. Subtitles (.srt, .vtt, .json) from artifact paths if they exist
+            if job.artifact_paths:
+                for fmt in ("srt", "vtt", "json"):
+                    art_path = job.artifact_paths.get(fmt)
+                    if art_path and Path(art_path).is_file():
+                        try:
+                            file_bytes = Path(art_path).read_bytes()
+                            folder_name = (
+                                "Subtitles_SRT"
+                                if fmt == "srt"
+                                else (
+                                    "Subtitles_VTT"
+                                    if fmt == "vtt"
+                                    else "JSON_Data"
+                                )
+                            )
+                            zf.writestr(
+                                f"{folder_name}/{file_base}.{fmt}", file_bytes
+                            )
+                        except Exception:
+                            pass
+
+    zip_bytes = zip_buffer.getvalue()
+    import unicodedata
+    import urllib.parse
+
+    clean_raw = _sanitize(batch.title or f"playlist_{batch.playlist_id}")
+    ascii_title = unicodedata.normalize("NFKD", clean_raw).encode("ascii", "ignore").decode("ascii")
+    ascii_title = re.sub(r'[\\/*?:"<>|]', "", ascii_title)
+    ascii_title = re.sub(r"\s+", " ", ascii_title).strip() or "playlist"
+    
+    ascii_filename = f"{ascii_title[:80]}_Transcripts.zip"
+    encoded_filename = urllib.parse.quote(f"{clean_raw}_Transcripts.zip")
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}',
+            "Content-Type": "application/zip",
+        },
+    )
+
+
 @router.delete("/transcripts/{job_id}", status_code=status.HTTP_200_OK)
 def delete_transcript_job(
     job_id: UUID,

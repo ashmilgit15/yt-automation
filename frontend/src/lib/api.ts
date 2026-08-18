@@ -2,7 +2,14 @@ import axios from 'axios';
 
 import type { OperatorLoginPayload, OperatorSession } from '@/types/auth';
 import type { YouTubeConnectionStatus } from '@/types/integrations';
-import type { PlaylistAnalysis, PlaylistBatch, TranscriptJob } from '@/types/transcripts';
+import type {
+  CreatePlaylistBatchOptions,
+  CreateSingleTranscriptOptions,
+  PlaylistAnalysis,
+  PlaylistBatch,
+  PlaylistBatchSummary,
+  TranscriptJob
+} from '@/types/transcripts';
 import type { BulkCreateJobPayload, BulkJobCreateResponse, CreateJobPayload, JobCollectionResponse, SourceRemixJobCreatePayload, VideoJobDetail } from '@/types/jobs';
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000/api/v1';
@@ -220,12 +227,41 @@ export async function analysePlaylist(playlist_url: string): Promise<PlaylistAna
   }
 }
 
-export async function createPlaylistBatch(playlist_url: string, selected_video_ids: string[]): Promise<PlaylistBatch> {
+export async function fetchPlaylistBatches(limit = 15): Promise<PlaylistBatchSummary[]> {
+  try {
+    const response = await api.get<PlaylistBatchSummary[]>('/playlists', {
+      params: { limit }
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function createPlaylistBatch(options: CreatePlaylistBatchOptions): Promise<PlaylistBatch> {
   try {
     const response = await api.post<PlaylistBatch>('/playlists', {
-      playlist_url,
-      selected_video_ids,
-      authorised_to_process: true
+      playlist_url: options.playlist_url,
+      selected_video_ids: options.selected_video_ids,
+      authorised_to_process: true,
+      engine: options.engine ?? 'local_whisper',
+      language_code: options.language_code ?? 'unknown',
+      mode: options.mode ?? 'transcribe'
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function createSingleTranscriptJob(options: CreateSingleTranscriptOptions): Promise<TranscriptJob> {
+  try {
+    const response = await api.post<TranscriptJob>('/transcripts/single', {
+      video_url: options.video_url,
+      authorised_to_process: true,
+      engine: options.engine ?? 'local_whisper',
+      language_code: options.language_code ?? 'unknown',
+      mode: options.mode ?? 'transcribe'
     });
     return response.data;
   } catch (error) {
@@ -235,6 +271,11 @@ export async function createPlaylistBatch(playlist_url: string, selected_video_i
 
 export async function fetchPlaylistBatch(batchId: string): Promise<PlaylistBatch> {
   const response = await api.get<PlaylistBatch>(`/playlists/${batchId}`);
+  return response.data;
+}
+
+export async function fetchTranscriptJob(jobId: string): Promise<TranscriptJob> {
+  const response = await api.get<TranscriptJob>(`/transcripts/${jobId}`);
   return response.data;
 }
 
@@ -250,3 +291,4 @@ export async function retryTranscriptJob(jobId: string): Promise<TranscriptJob> 
 export function transcriptExportUrl(jobId: string, format: 'txt' | 'srt' | 'vtt' | 'json'): string {
   return `${baseURL}/transcripts/${jobId}/export/${format}`;
 }
+

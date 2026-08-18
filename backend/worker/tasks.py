@@ -16,7 +16,7 @@ from backend.services.researcher import ResearcherService
 from backend.services.source_remix import SourceRemixService
 from backend.services.transcriber import TranscriberService
 from backend.models.transcription_models import PlaylistBatch, PlaylistStatus, TranscriptJob, TranscriptStatus
-from backend.services.local_transcriber import LocalWhisperService
+from backend.services.transcription_manager import TranscriptionManager
 from backend.services.utils import stacktrace_from_exception
 from backend.services.visual_curator import VisualCuratorService
 from backend.worker.celery_app import celery_app
@@ -60,7 +60,9 @@ def _fail_job(db: Session, job: VideoJob, exc: Exception) -> None:
     db.commit()
 
 
-def _refresh_playlist_progress(db: Session, batch: PlaylistBatch) -> None:
+def _refresh_playlist_progress(db: Session, batch: PlaylistBatch | None) -> None:
+    if not batch:
+        return
     jobs = list(
         db.query(TranscriptJob).filter(TranscriptJob.playlist_batch_id == batch.id).all()
     )
@@ -85,26 +87,50 @@ def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, An
             raise RuntimeError("Transcript job was not found.")
         if job.status not in {TranscriptStatus.PENDING, TranscriptStatus.FAILED}:
             return {"job_id": transcript_job_id, "status": job.status.value}
-        batch = db.get(PlaylistBatch, job.playlist_batch_id)
-        if not batch:
-            raise RuntimeError("Playlist batch was not found.")
-        worker = LocalWhisperService()
+
+        batch = db.get(PlaylistBatch, job.playlist_batch_id) if job.playlist_batch_id else None
+        manager = TranscriptionManager()
+
+        def _update_progress(pct: int, detail: str) -> None:
+            job.progress = pct
+            job.stage_detail = detail
+            db.add(job)
+            db.commit()
+
         try:
             job.status = TranscriptStatus.ACQUIRING
             job.progress = 10
+            job.stage_detail = "Acquiring audio from YouTube..."
             job.error_log = None
             db.add(job)
             db.commit()
-            audio_path = worker.acquire_audio(job_id=str(job.id), video_url=job.video_url)
+            if batch:
+                _refresh_playlist_progress(db, batch)
+
+            audio_path = manager.acquire_audio(
+                engine_name=job.engine,
+                job_id=str(job.id),
+                video_url=job.video_url,
+            )
 
             job.status = TranscriptStatus.TRANSCRIBING
-            job.progress = 45
+            job.progress = 20
+            job.stage_detail = f"Transcribing using {job.engine} engine..."
             db.add(job)
             db.commit()
-            result = worker.transcribe(job_id=str(job.id), audio_path=audio_path)
+
+            result = manager.transcribe(
+                engine_name=job.engine,
+                job_id=str(job.id),
+                audio_path=audio_path,
+                language_code=job.language or "unknown",
+                mode=job.mode or "transcribe",
+                progress_callback=_update_progress,
+            )
 
             job.status = TranscriptStatus.EXPORTING
             job.progress = 90
+            job.stage_detail = "Exporting subtitles (TXT, SRT, VTT, JSON)..."
             job.language = result["language"]
             job.transcript_text = result["transcript_text"]
             job.segments_json = result["segments"]
@@ -114,17 +140,21 @@ def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, An
 
             job.status = TranscriptStatus.COMPLETED
             job.progress = 100
+            job.stage_detail = "Completed successfully."
             db.add(job)
             db.commit()
-            _refresh_playlist_progress(db, batch)
+            if batch:
+                _refresh_playlist_progress(db, batch)
             return {"job_id": transcript_job_id, "status": job.status.value}
         except Exception as exc:
             job.status = TranscriptStatus.FAILED
             job.progress = 0
+            job.stage_detail = f"Failed: {str(exc)[:120]}"
             job.error_log = stacktrace_from_exception(exc)
             db.add(job)
             db.commit()
-            _refresh_playlist_progress(db, batch)
+            if batch:
+                _refresh_playlist_progress(db, batch)
             raise
     finally:
         db.close()

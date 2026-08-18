@@ -33,6 +33,7 @@ class PlaylistBatch(Base):
     playlist_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     source_url: Mapped[str] = mapped_column(String(500), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    engine: Mapped[str] = mapped_column(String(32), nullable=False, default="local_whisper")
     status: Mapped[PlaylistStatus] = mapped_column(
         SqlEnum(PlaylistStatus, name="playlist_batch_status"),
         nullable=False,
@@ -52,8 +53,8 @@ class TranscriptJob(Base):
     __tablename__ = "transcript_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    playlist_batch_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("playlist_batches.id", ondelete="CASCADE"), nullable=False, index=True
+    playlist_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("playlist_batches.id", ondelete="CASCADE"), nullable=True, index=True
     )
     video_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     video_url: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -62,6 +63,7 @@ class TranscriptJob(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     thumbnail_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    engine: Mapped[str] = mapped_column(String(32), nullable=False, default="local_whisper")
     status: Mapped[TranscriptStatus] = mapped_column(
         SqlEnum(TranscriptStatus, name="transcript_job_status"),
         nullable=False,
@@ -69,7 +71,9 @@ class TranscriptJob(Base):
         index=True,
     )
     progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stage_detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
     language: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    mode: Mapped[str | None] = mapped_column(String(32), nullable=True, default="transcribe")
     transcript_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     segments_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     artifact_paths: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)

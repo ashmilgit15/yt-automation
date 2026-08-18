@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     whisper_compute_type: str = Field(default="int8_float16")
     transcription_max_playlist_items: int = Field(default=200, ge=1, le=200)
 
+    sarvam_api_key: str | None = Field(default=None)
+    sarvam_model: str = Field(default="saaras:v3")
+    sarvam_default_language: str = Field(default="unknown")
+    sarvam_mode: str = Field(default="transcribe")
+
     quality_gate_threshold: int = Field(default=7)
     kokoro_voice: str = Field(default="af_heart")
     kokoro_language_code: str = Field(default="a")

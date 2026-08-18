@@ -28,7 +28,25 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
+    from sqlalchemy import text
     from backend.models.db_models import VideoJob, YouTubeCredential  # noqa: F401
     from backend.models.transcription_models import PlaylistBatch, TranscriptJob  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+
+    # Automatic schema migration for existing PostgreSQL volumes
+    migration_statements = [
+        "ALTER TABLE playlist_batches ADD COLUMN IF NOT EXISTS engine VARCHAR(32) DEFAULT 'local_whisper';",
+        "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS engine VARCHAR(32) DEFAULT 'local_whisper';",
+        "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS stage_detail VARCHAR(255);",
+        "ALTER TABLE transcript_jobs ADD COLUMN IF NOT EXISTS mode VARCHAR(32) DEFAULT 'transcribe';",
+        "ALTER TABLE transcript_jobs ALTER COLUMN playlist_batch_id DROP NOT NULL;",
+    ]
+
+    with engine.begin() as conn:
+        for stmt in migration_statements:
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass
+

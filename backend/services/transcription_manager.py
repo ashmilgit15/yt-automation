@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
@@ -13,6 +14,8 @@ from backend.services.utils import (
     get_job_directory,
     maybe_sleep_for_rate_limit,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GroqWhisperService:
@@ -110,10 +113,8 @@ class GroqWhisperService:
 
 class TranscriptionManager:
     """
-    Unified manager routing transcription requests to the selected engine:
-    - 'local_whisper': Local GPU/CPU faster-whisper
-    - 'sarvam': Sarvam AI STT (saaras:v3)
-    - 'groq': Groq Whisper Cloud
+    Unified manager routing transcription requests to the selected engine with
+    automatic cascading fallback when an engine fails (e.g. rate limits, network, quotas).
     """
 
     def __init__(self) -> None:
@@ -121,9 +122,42 @@ class TranscriptionManager:
 
     def acquire_audio(self, *, engine_name: str, job_id: str, video_url: str) -> Path:
         if engine_name == "sarvam":
-            return SarvamSTTService().acquire_audio(job_id=job_id, video_url=video_url)
+            try:
+                return SarvamSTTService().acquire_audio(job_id=job_id, video_url=video_url)
+            except Exception as e:
+                logger.warning(
+                    f"Sarvam audio acquire failed for job {job_id} ({e}), falling back to standard audio acquire."
+                )
         # Both local_whisper and groq use MP3
         return LocalWhisperService().acquire_audio(job_id=job_id, video_url=video_url)
+
+    def _get_engine_order(self, preferred_engine: str) -> list[str]:
+        """Builds an ordered list of engines to try with preferred engine first."""
+        preferred = (preferred_engine or "local_whisper").lower().strip()
+        available: list[str] = []
+
+        if preferred == "sarvam":
+            available = ["sarvam"]
+            if self.settings.groq_api_key:
+                available.append("groq")
+            available.append("local_whisper")
+        elif preferred == "groq":
+            available = ["groq"]
+            available.append("local_whisper")
+            if self.settings.sarvam_api_key:
+                available.append("sarvam")
+        else:
+            available = ["local_whisper"]
+            if self.settings.groq_api_key:
+                available.append("groq")
+            if self.settings.sarvam_api_key:
+                available.append("sarvam")
+
+        # Guarantee local_whisper is always present as ultimate failsafe
+        if "local_whisper" not in available:
+            available.append("local_whisper")
+
+        return available
 
     def transcribe(
         self,
@@ -135,31 +169,62 @@ class TranscriptionManager:
         mode: str = "transcribe",
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> dict[str, Any]:
-        normalized_engine = (engine_name or "local_whisper").lower().strip()
+        engine_chain = self._get_engine_order(engine_name)
+        errors: list[str] = []
 
-        if normalized_engine == "sarvam":
-            service = SarvamSTTService()
-            return service.transcribe(
-                job_id=job_id,
-                audio_path=audio_path,
-                language_code=language_code,
-                mode=mode,
-                progress_callback=progress_callback,
-            )
-        elif normalized_engine == "groq":
-            groq_service = GroqWhisperService()
-            return groq_service.transcribe(
-                job_id=job_id,
-                audio_path=audio_path,
-                language_code=language_code,
-                progress_callback=progress_callback,
-            )
-        else:
-            # Default to local faster-whisper
-            whisper_service = LocalWhisperService()
-            return whisper_service.transcribe(
-                job_id=job_id,
-                audio_path=audio_path,
-                language_code=language_code,
-                progress_callback=progress_callback,
-            )
+        for idx, current_engine in enumerate(engine_chain):
+            try:
+                if idx > 0 and progress_callback:
+                    last_err = errors[-1] if errors else "Error"
+                    short_err = last_err.split(":")[-1].strip()[:60]
+                    progress_callback(
+                        25,
+                        f"Previous engine failed ({short_err}). Falling back to {current_engine.upper()}...",
+                    )
+                logger.info(
+                    f"[Job {job_id}] Attempting transcription with engine: {current_engine} (attempt {idx + 1}/{len(engine_chain)})"
+                )
+
+                if current_engine == "sarvam":
+                    service = SarvamSTTService()
+                    res = service.transcribe(
+                        job_id=job_id,
+                        audio_path=audio_path,
+                        language_code=language_code,
+                        mode=mode,
+                        progress_callback=progress_callback,
+                    )
+                    res["engine"] = "sarvam"
+                    return res
+
+                elif current_engine == "groq":
+                    groq_service = GroqWhisperService()
+                    res = groq_service.transcribe(
+                        job_id=job_id,
+                        audio_path=audio_path,
+                        language_code=language_code,
+                        progress_callback=progress_callback,
+                    )
+                    res["engine"] = "groq"
+                    return res
+
+                else:
+                    whisper_service = LocalWhisperService()
+                    res = whisper_service.transcribe(
+                        job_id=job_id,
+                        audio_path=audio_path,
+                        language_code=language_code,
+                        progress_callback=progress_callback,
+                    )
+                    res["engine"] = "local_whisper"
+                    return res
+
+            except Exception as exc:
+                err_msg = f"{current_engine} error: {exc}"
+                logger.warning(f"[Job {job_id}] {err_msg}")
+                errors.append(err_msg)
+
+        # If all engines in chain failed
+        raise RuntimeError(
+            f"All transcription engines failed. Attempts: {'; '.join(errors)}"
+        )

@@ -141,6 +141,7 @@ def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, An
                 progress_callback=_update_progress,
             )
 
+            job.engine = result.get("engine", job.engine)
             job.language = result["language"]
             job.transcript_text = result["transcript_text"]
             job.segments_json = result["segments"]

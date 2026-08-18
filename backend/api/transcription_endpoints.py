@@ -552,19 +552,23 @@ def export_playlist_zip(
     import io
     import re
     import zipfile
+    from backend.services.subtitles import build_srt, build_vtt
 
     batch, jobs = _load_batch(db, batch_id)
     completed_jobs = [
         j
         for j in jobs
         if j.transcript_text
+        or j.clean_transcript_text
+        or j.summary_markdown
         or (j.artifact_paths and len(j.artifact_paths) > 0)
+        or (j.segments_json and len(j.segments_json) > 0)
     ]
 
     if not completed_jobs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No completed transcripts available in this batch to export.",
+            detail="No completed transcripts available to export",
         )
 
     def _sanitize(text: str) -> str:
@@ -575,72 +579,97 @@ def export_playlist_zip(
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # Master summary if available
-        if batch.batch_summary_markdown:
+        master_summary = batch.master_summary or batch.batch_summary_markdown
+        if master_summary and master_summary.strip():
             zf.writestr(
                 "00_MASTER_PLAYLIST_SUMMARY.md",
-                batch.batch_summary_markdown.encode("utf-8"),
+                (master_summary.strip() + "\n").encode("utf-8"),
             )
 
         for idx, job in enumerate(jobs):
-            if not job.transcript_text and not job.artifact_paths:
+            # Check if this job has any completed transcript or subtitle content
+            has_raw = bool(job.transcript_text and job.transcript_text.strip())
+            has_clean = bool(job.clean_transcript_text and job.clean_transcript_text.strip())
+            has_summary = bool(job.summary_markdown and job.summary_markdown.strip())
+            has_artifacts = bool(job.artifact_paths and len(job.artifact_paths) > 0)
+            has_segments = bool(job.segments_json and len(job.segments_json) > 0)
+
+            if not (has_raw or has_clean or has_summary or has_artifacts or has_segments):
                 continue
 
             pos_num = (job.position + 1) if job.position is not None else (idx + 1)
             safe_title = _sanitize(job.title or job.video_id)
             file_base = f"{pos_num:02d} - {safe_title}"
 
-            # 1. Main / Clean Transcript text
-            if job.clean_transcript_text:
+            # 1. Clean Transcript text (if AI cleanup was enabled / clean transcript exists)
+            if has_clean and job.clean_transcript_text:
                 zf.writestr(
                     f"Clean_Transcripts/{file_base} (Clean).txt",
-                    job.clean_transcript_text.encode("utf-8"),
+                    (job.clean_transcript_text.strip() + "\n").encode("utf-8"),
                 )
-            if job.transcript_text:
+
+            # 2. Main / Raw Transcript text
+            if has_raw and job.transcript_text:
                 zf.writestr(
                     f"Transcripts/{file_base}.txt",
-                    job.transcript_text.encode("utf-8"),
+                    (job.transcript_text.strip() + "\n").encode("utf-8"),
                 )
 
-            # 2. AI Summary Markdown
-            if job.summary_markdown:
+            # 3. AI Summary Markdown (if AI summarization was enabled / summary exists)
+            if has_summary and job.summary_markdown:
                 zf.writestr(
                     f"Summaries/{file_base} - Summary.md",
-                    job.summary_markdown.encode("utf-8"),
+                    (job.summary_markdown.strip() + "\n").encode("utf-8"),
                 )
 
-            # 3. Subtitles (.srt, .vtt, .json) from artifact paths if they exist
-            if job.artifact_paths:
-                for fmt in ("srt", "vtt", "json"):
-                    art_path = job.artifact_paths.get(fmt)
-                    if art_path and Path(art_path).is_file():
-                        try:
-                            file_bytes = Path(art_path).read_bytes()
-                            folder_name = (
-                                "Subtitles_SRT"
-                                if fmt == "srt"
-                                else (
-                                    "Subtitles_VTT"
-                                    if fmt == "vtt"
-                                    else "JSON_Data"
-                                )
-                            )
-                            zf.writestr(
-                                f"{folder_name}/{file_base}.{fmt}", file_bytes
-                            )
-                        except Exception:
-                            pass
+            # 4. Subtitles SRT (.srt)
+            srt_bytes: bytes | None = None
+            if job.artifact_paths and job.artifact_paths.get("srt"):
+                art_path = Path(job.artifact_paths["srt"])
+                if art_path.is_file():
+                    try:
+                        srt_bytes = art_path.read_bytes()
+                    except Exception:
+                        pass
+            if srt_bytes is None and (job.clean_segments_json or job.segments_json):
+                segments = job.clean_segments_json or job.segments_json
+                if segments:
+                    try:
+                        srt_bytes = (build_srt(segments).strip() + "\n").encode("utf-8")
+                    except Exception:
+                        pass
+            if srt_bytes:
+                zf.writestr(f"Subtitles_SRT/{file_base}.srt", srt_bytes)
+
+            # 5. Subtitles VTT (.vtt)
+            vtt_bytes: bytes | None = None
+            if job.artifact_paths and job.artifact_paths.get("vtt"):
+                art_path = Path(job.artifact_paths["vtt"])
+                if art_path.is_file():
+                    try:
+                        vtt_bytes = art_path.read_bytes()
+                    except Exception:
+                        pass
+            if vtt_bytes is None and (job.clean_segments_json or job.segments_json):
+                segments = job.clean_segments_json or job.segments_json
+                if segments:
+                    try:
+                        vtt_bytes = (build_vtt(segments).strip() + "\n").encode("utf-8")
+                    except Exception:
+                        pass
+            if vtt_bytes:
+                zf.writestr(f"Subtitles_VTT/{file_base}.vtt", vtt_bytes)
 
     zip_bytes = zip_buffer.getvalue()
     import unicodedata
     import urllib.parse
 
-    clean_raw = _sanitize(batch.title or f"playlist_{batch.playlist_id}")
-    ascii_title = unicodedata.normalize("NFKD", clean_raw).encode("ascii", "ignore").decode("ascii")
-    ascii_title = re.sub(r'[\\/*?:"<>|]', "", ascii_title)
-    ascii_title = re.sub(r"\s+", " ", ascii_title).strip() or "playlist"
+    safe_batch_title = _sanitize(batch.title or f"playlist_{batch.playlist_id}") or "Playlist"
+    ascii_title = unicodedata.normalize("NFKD", safe_batch_title).encode("ascii", "ignore").decode("ascii")
+    ascii_title = re.sub(r'[\\/*?:"<>|]', "", ascii_title).strip() or "Playlist"
     
-    ascii_filename = f"{ascii_title[:80]}_Transcripts.zip"
-    encoded_filename = urllib.parse.quote(f"{clean_raw}_Transcripts.zip")
+    ascii_filename = f"{ascii_title[:80]} Transcripts.zip"
+    encoded_filename = urllib.parse.quote(f"{safe_batch_title} Transcripts.zip")
 
     return Response(
         content=zip_bytes,

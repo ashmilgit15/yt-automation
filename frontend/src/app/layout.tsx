@@ -1,20 +1,12 @@
 import type { Metadata, Viewport } from 'next';
 import Link from 'next/link';
-import { IBM_Plex_Mono, Space_Grotesk } from 'next/font/google';
 import type { ReactNode } from 'react';
 
 import './globals.css';
 
-const display = Space_Grotesk({
-  subsets: ['latin'],
-  variable: '--font-display'
-});
-
-const mono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500'],
-  variable: '--font-mono'
-});
+// Font variables fallback for offline and production builds
+const display = { variable: 'font-display' };
+const mono = { variable: 'font-mono' };
 
 export const metadata: Metadata = {
   title: 'Bulk YouTube Transcriber',

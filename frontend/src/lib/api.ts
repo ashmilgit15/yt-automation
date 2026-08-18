@@ -398,12 +398,13 @@ export function playlistBatchZipUrl(batchId: string): string {
   return `${baseURL}/playlists/${batchId}/export/zip`;
 }
 
-export async function downloadPlaylistBatchZip(batchId: string, customFilename?: string | null): Promise<void> {
+export async function downloadPlaylistBatchZip(batchId: string, title?: string | null): Promise<void> {
   const url = playlistBatchZipUrl(batchId);
   const anchor = document.createElement('a');
   anchor.href = url;
-  if (customFilename) {
-    anchor.download = customFilename.endsWith('.zip') ? customFilename : `${customFilename}.zip`;
+  if (title) {
+    const safeTitle = title.replace(/[\\/*?:"<>|]/g, '').trim();
+    anchor.download = safeTitle.endsWith('.zip') ? safeTitle : `${safeTitle || 'Playlist'} Transcripts.zip`;
   }
   document.body.appendChild(anchor);
   anchor.click();

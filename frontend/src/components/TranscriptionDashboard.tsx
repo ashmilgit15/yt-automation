@@ -825,17 +825,16 @@ export function TranscriptionDashboard() {
                           {batch.status}
                         </span>
 
-                        {completedCount > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => downloadPlaylistBatchZip(batch.id, batch.title)}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3.5 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition shadow-sm"
-                            title="Download All Transcripts as a ZIP Archive"
-                          >
-                            <Archive className="h-3.5 w-3.5" />
-                            <span>Download ZIP</span>
-                          </button>
-                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => downloadPlaylistBatchZip(batch.id, batch.title)}
+                          disabled={completedCount === 0}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3.5 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="Download All Transcripts as a ZIP Archive"
+                        >
+                          <Archive className="h-3.5 w-3.5" />
+                          <span>📦 Download ZIP</span>
+                        </button>
 
                         {batch.status === 'PROCESSING' || batch.status === 'QUEUED' ? (
                           <button
@@ -1104,17 +1103,16 @@ export function TranscriptionDashboard() {
                             <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle(item.status as any)}`}>
                               {item.status}
                             </span>
-                            {item.completed_videos > 0 ? (
-                              <button
-                                type="button"
-                                onClick={() => downloadPlaylistBatchZip(item.id, item.title)}
-                                className="inline-flex items-center gap-1 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition"
-                                title="Download All Transcripts as ZIP"
-                              >
-                                <Archive className="h-3.5 w-3.5" />
-                                <span>ZIP</span>
-                              </button>
-                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => downloadPlaylistBatchZip(item.id, item.title)}
+                              disabled={item.completed_videos === 0}
+                              className="inline-flex items-center gap-1 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Download All Transcripts as ZIP"
+                            >
+                              <Archive className="h-3.5 w-3.5" />
+                              <span>📦 Download ZIP</span>
+                            </button>
                             <button
                               type="button"
                               onClick={() => {

@@ -57,6 +57,14 @@ class PlaylistBatch(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
+    @property
+    def master_summary(self) -> str | None:
+        return self.batch_summary_markdown
+
+    @master_summary.setter
+    def master_summary(self, value: str | None) -> None:
+        self.batch_summary_markdown = value
+
 
 class TranscriptJob(Base):
     __tablename__ = "transcript_jobs"

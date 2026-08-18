@@ -60,29 +60,36 @@ class LocalWhisperService:
         global _CACHED_WHISPER_MODEL, _CACHED_MODEL_KEY
         from faster_whisper import WhisperModel
 
-        model_key = f"{self.settings.whisper_model}:{self.settings.whisper_device}:{self.settings.whisper_compute_type}"
+        model_name = self.settings.whisper_model or "deepdml/faster-whisper-large-v3-turbo-ct2"
+        compute_type = self.settings.whisper_compute_type or "int8_float16"
+        device = self.settings.whisper_device if self.settings.whisper_device != "auto" else "cuda"
+
+        # Prefer pre-cached local disk directory if available
+        local_dir = Path("/root/.cache/whisper_models/faster-whisper-large-v3-turbo-ct2")
+        if local_dir.is_dir() and (local_dir / "model.bin").is_file() and (local_dir / "model.bin").stat().st_size > 100_000_000:
+            model_name = str(local_dir)
+
+        model_key = f"{model_name}:{device}:{compute_type}"
         if _CACHED_WHISPER_MODEL is not None and _CACHED_MODEL_KEY == model_key:
             return _CACHED_WHISPER_MODEL
 
-        if self.settings.whisper_device != "auto":
+        try:
             model = WhisperModel(
-                self.settings.whisper_model,
-                device=self.settings.whisper_device,
-                compute_type=self.settings.whisper_compute_type,
+                model_name,
+                device=device,
+                compute_type=compute_type,
+                cpu_threads=4,
+                num_workers=2,
             )
-        else:
-            try:
-                model = WhisperModel(
-                    self.settings.whisper_model,
-                    device="cuda",
-                    compute_type=self.settings.whisper_compute_type,
-                )
-            except Exception:
-                model = WhisperModel(
-                    self.settings.whisper_model,
-                    device="cpu",
-                    compute_type="int8",
-                )
+        except Exception:
+            # Fallback to int8 on CPU if CUDA is unavailable
+            model = WhisperModel(
+                model_name,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=4,
+                num_workers=2,
+            )
 
         _CACHED_WHISPER_MODEL = model
         _CACHED_MODEL_KEY = model_key
@@ -109,8 +116,15 @@ class LocalWhisperService:
         segments_source, info = model.transcribe(
             str(audio_path),
             language=lang_param,
-            vad_filter=True,
             beam_size=5,
+            best_of=5,
+            temperature=[0.0, 0.2, 0.4],
+            condition_on_previous_text=False,  # CRITICAL: stops repetition hallucination on long horizon
+            vad_filter=True,                   # CRITICAL: cuts silence loops
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+                speech_pad_ms=400,
+            ),
             word_timestamps=True,
         )
 

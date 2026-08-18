@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     groq_whisper_model: str = Field(default="whisper-large-v3-turbo")
     pexels_api_key: str | None = Field(default=None)
 
-    whisper_model: str = Field(default="small")
+    whisper_model: str = Field(default="deepdml/faster-whisper-large-v3-turbo-ct2")
     whisper_device: str = Field(default="auto")
     whisper_compute_type: str = Field(default="int8_float16")
     transcription_max_playlist_items: int = Field(default=200, ge=1, le=200)

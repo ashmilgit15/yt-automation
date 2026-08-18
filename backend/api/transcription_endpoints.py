@@ -539,3 +539,61 @@ def export_transcript(
         filename=f"{job.video_id}.{export_format}",
         headers={"Content-Disposition": f'attachment; filename="{job.video_id}.{export_format}"'},
     )
+
+
+@router.delete("/transcripts/{job_id}", status_code=status.HTTP_200_OK)
+def delete_transcript_job(
+    job_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> dict[str, Any]:
+    """Deletes a transcript job and its local artifacts."""
+    job = db.get(TranscriptJob, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+    batch = db.get(PlaylistBatch, job.playlist_batch_id) if job.playlist_batch_id else None
+
+    # Remove directory artifacts if exists
+    try:
+        import shutil
+        from backend.services.utils import get_job_directory
+        job_dir = get_job_directory(str(job.id))
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    db.delete(job)
+    db.commit()
+
+    if batch:
+        from backend.worker.tasks import _refresh_playlist_progress
+        _refresh_playlist_progress(db, batch)
+
+    return {"message": "Job deleted successfully", "job_id": str(job_id)}
+
+
+@router.delete("/playlists/{batch_id}", status_code=status.HTTP_200_OK)
+def delete_playlist_batch(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> dict[str, Any]:
+    """Deletes an entire playlist batch and its associated jobs and artifacts."""
+    batch, jobs = _load_batch(db, batch_id)
+
+    import shutil
+    from backend.services.utils import get_job_directory
+    for job in jobs:
+        try:
+            job_dir = get_job_directory(str(job.id))
+            if job_dir.exists():
+                shutil.rmtree(job_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    db.delete(batch)
+    db.commit()
+    return {"message": "Playlist batch deleted successfully", "batch_id": str(batch_id)}
+

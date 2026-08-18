@@ -28,6 +28,7 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  Trash2,
   Video,
   Wand2,
   X
@@ -40,6 +41,8 @@ import {
   cancelTranscriptJob,
   createPlaylistBatch,
   createSingleTranscriptJob,
+  deletePlaylistBatch,
+  deleteTranscriptJob,
   fetchOperatorSession,
   fetchPlaylistBatch,
   fetchPlaylistBatches,
@@ -365,6 +368,41 @@ export function TranscriptionDashboard() {
       await mutateBatch();
     } catch (error) {
       setMessage({ text: error instanceof Error ? error.message : 'Cancel batch failed.', type: 'error' });
+    }
+  };
+
+  const handleDeleteJob = async (jobId: string) => {
+    try {
+      await deleteTranscriptJob(jobId);
+      if (polledSingleJob?.id === jobId) {
+        setSingleJobId(null);
+        localStorage.removeItem('yt_active_single_job_id');
+      }
+      if (previewJob?.id === jobId) {
+        setPreviewJob(null);
+      }
+      await mutateBatch();
+      await mutateSingleJob();
+      await mutateRecentJobs();
+      setMessage({ text: 'Job removed.', type: 'info' });
+    } catch (error) {
+      setMessage({ text: error instanceof Error ? error.message : 'Delete job failed.', type: 'error' });
+    }
+  };
+
+  const handleDeleteBatch = async (bId: string) => {
+    try {
+      await deletePlaylistBatch(bId);
+      if (batchId === bId) {
+        setBatchId(null);
+        localStorage.removeItem('yt_active_batch_id');
+      }
+      await mutateBatch();
+      await mutateHistory();
+      await mutateRecentJobs();
+      setMessage({ text: 'Playlist batch deleted.', type: 'info' });
+    } catch (error) {
+      setMessage({ text: error instanceof Error ? error.message : 'Delete batch failed.', type: 'error' });
     }
   };
 
@@ -814,6 +852,15 @@ export function TranscriptionDashboard() {
                             <Square className="h-3.5 w-3.5" /> Cancel Batch
                           </button>
                         ) : null}
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteBatch(batch.id)}
+                          className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-slate-950/60 p-2 text-slate-400 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300 transition"
+                          title="Delete entire batch"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </div>
 
@@ -847,6 +894,7 @@ export function TranscriptionDashboard() {
                           onPause={handlePauseJob}
                           onResume={handleResumeJob}
                           onCancel={handleCancelJob}
+                          onDelete={handleDeleteJob}
                           onPreview={(j) => {
                             setPreviewJob(j);
                             setModalTab(j.clean_transcript_text ? 'clean' : j.summary_markdown ? 'summary' : 'raw');
@@ -923,6 +971,7 @@ export function TranscriptionDashboard() {
                       onPause={handlePauseJob}
                       onResume={handleResumeJob}
                       onCancel={handleCancelJob}
+                      onDelete={handleDeleteJob}
                       onPreview={(j) => {
                         setPreviewJob(j);
                         setModalTab(j.clean_transcript_text ? 'clean' : j.summary_markdown ? 'summary' : 'raw');
@@ -999,6 +1048,7 @@ export function TranscriptionDashboard() {
                           onPause={handlePauseJob}
                           onResume={handleResumeJob}
                           onCancel={handleCancelJob}
+                          onDelete={handleDeleteJob}
                           onPreview={(j) => {
                             setPreviewJob(j);
                             setModalTab(j.clean_transcript_text ? 'clean' : j.summary_markdown ? 'summary' : 'raw');
@@ -1036,7 +1086,7 @@ export function TranscriptionDashboard() {
                               {new Date(item.created_at).toLocaleDateString()}
                             </p>
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
                             <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle(item.status as any)}`}>
                               {item.status}
                             </span>
@@ -1050,6 +1100,14 @@ export function TranscriptionDashboard() {
                               className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-400 transition"
                             >
                               Open Batch
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteBatch(item.id)}
+                              className="rounded-xl border border-white/10 bg-slate-900 p-2 text-slate-400 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300 transition"
+                              title="Delete Batch"
+                            >
+                              <X className="h-4 w-4" />
                             </button>
                           </div>
                         </div>
@@ -1359,6 +1417,7 @@ function TranscriptRow({
   onPause,
   onResume,
   onCancel,
+  onDelete,
   onPreview
 }: {
   job: TranscriptJob;
@@ -1366,6 +1425,7 @@ function TranscriptRow({
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onCancel: (id: string) => void;
+  onDelete?: (id: string) => void;
   onPreview: (job: TranscriptJob) => void;
 }) {
   const isActive = ACTIVE_STATUSES.has(job.status);
@@ -1436,6 +1496,17 @@ function TranscriptRow({
               title="Cancel Job"
             >
               <Square className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+
+          {onDelete ? (
+            <button
+              type="button"
+              onClick={() => onDelete(job.id)}
+              className="rounded-lg border border-white/10 bg-slate-900/80 p-1.5 text-slate-400 hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300 transition"
+              title="Remove / Delete Job"
+            >
+              <X className="h-3.5 w-3.5" />
             </button>
           ) : null}
         </div>

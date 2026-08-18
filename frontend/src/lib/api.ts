@@ -371,6 +371,22 @@ export async function runAiSummarizer(jobId: string): Promise<TranscriptJob> {
   }
 }
 
+export async function deleteTranscriptJob(jobId: string): Promise<void> {
+  try {
+    await api.delete(`/transcripts/${jobId}`);
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
+export async function deletePlaylistBatch(batchId: string): Promise<void> {
+  try {
+    await api.delete(`/playlists/${batchId}`);
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
 export function transcriptExportUrl(
   jobId: string,
   format: 'txt' | 'srt' | 'vtt' | 'json' | 'clean_txt' | 'clean_srt' | 'clean_vtt' | 'summary_md' | 'summary_json'

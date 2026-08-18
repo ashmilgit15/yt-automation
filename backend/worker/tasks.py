@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 from celery import Task
 from sqlalchemy.orm import Session
@@ -21,6 +24,7 @@ from backend.services.transcript_summarizer import TranscriptSummarizerService
 from backend.services.transcription_manager import TranscriptionManager
 from backend.services.utils import stacktrace_from_exception
 from backend.services.visual_curator import VisualCuratorService
+from backend.services.ytdlp_classifier import classify_ytdlp_failure
 from backend.worker.celery_app import celery_app
 
 
@@ -141,6 +145,7 @@ def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, An
                 progress_callback=_update_progress,
             )
 
+            job.engine = result.get("engine", job.engine)
             job.language = result["language"]
             job.transcript_text = result["transcript_text"]
             job.segments_json = result["segments"]
@@ -201,6 +206,9 @@ def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, An
             job.status = TranscriptStatus.COMPLETED
             job.progress = 100
             job.stage_detail = "Completed successfully."
+            job.failure_type = None
+            job.is_retryable = True
+            job.error_log = None
             db.add(job)
             db.commit()
             if batch:
@@ -224,14 +232,53 @@ def transcribe_playlist_item(self: Task, transcript_job_id: str) -> dict[str, An
             return {"job_id": transcript_job_id, "status": job.status.value}
         except Exception as exc:
             if not _is_stopped():
-                job.status = TranscriptStatus.FAILED
-                job.progress = 0
-                job.stage_detail = f"Failed: {str(exc)[:120]}"
-                job.error_log = stacktrace_from_exception(exc)
-                db.add(job)
-                db.commit()
-                if batch:
-                    _refresh_playlist_progress(db, batch)
+                classification = classify_ytdlp_failure(exc)
+                job.failure_type = classification.failure_type
+                job.is_retryable = classification.is_retryable
+
+                if not classification.is_retryable:
+                    # Permanent failure (DRM, unavailable, age-restricted, corrupt): fail fast immediately without retry
+                    job.status = TranscriptStatus.FAILED
+                    job.progress = 0
+                    job.stage_detail = classification.user_message
+                    job.error_log = stacktrace_from_exception(exc)
+                    db.add(job)
+                    db.commit()
+                    if batch:
+                        _refresh_playlist_progress(db, batch)
+                    logger.warning(
+                        f"[Job {transcript_job_id}] Permanent non-retryable failure ({classification.failure_type}): {classification.user_message}"
+                    )
+                    return {"job_id": transcript_job_id, "status": "FAILED", "reason": classification.user_message}
+
+                # Transient failure (rate limit, network, session hiccup): retry with backoff
+                current_retries = getattr(self.request, "retries", 0)
+                max_auto_retries = 3
+                if current_retries < max_auto_retries:
+                    backoff_seconds = (2 ** current_retries) * 5  # 5s, 10s, 20s
+                    job.status = TranscriptStatus.PENDING
+                    job.progress = 0
+                    job.stage_detail = (
+                        f"{classification.user_message} "
+                        f"(Retrying {current_retries + 1}/{max_auto_retries} in {backoff_seconds}s)..."
+                    )
+                    db.add(job)
+                    db.commit()
+                    if batch:
+                        _refresh_playlist_progress(db, batch)
+                    logger.warning(
+                        f"[Job {transcript_job_id}] Auto-retrying transient task (attempt {current_retries + 1}/{max_auto_retries}) in {backoff_seconds}s due to: {exc}"
+                    )
+                    raise self.retry(exc=exc, countdown=backoff_seconds, max_retries=max_auto_retries)
+                else:
+                    job.status = TranscriptStatus.FAILED
+                    job.progress = 0
+                    job.stage_detail = f"Failed after {max_auto_retries} attempts: {classification.user_message}"
+                    job.error_log = stacktrace_from_exception(exc)
+                    db.add(job)
+                    db.commit()
+                    if batch:
+                        _refresh_playlist_progress(db, batch)
             raise
     finally:
         db.close()

@@ -353,6 +353,15 @@ export async function cancelPlaylistBatch(batchId: string): Promise<PlaylistBatc
   }
 }
 
+export async function retryFailedPlaylistBatch(batchId: string): Promise<PlaylistBatch> {
+  try {
+    const response = await api.post<PlaylistBatch>(`/playlists/${batchId}/retry-failed`);
+    return response.data;
+  } catch (error) {
+    throw new Error(extractErrorMessage(error));
+  }
+}
+
 export async function runAiCleaner(jobId: string): Promise<TranscriptJob> {
   try {
     const response = await api.post<TranscriptJob>(`/transcripts/${jobId}/run-cleaner`);
@@ -393,4 +402,22 @@ export function transcriptExportUrl(
 ): string {
   return `${baseURL}/transcripts/${jobId}/export/${format}`;
 }
+
+export function playlistBatchZipUrl(batchId: string): string {
+  return `${baseURL}/playlists/${batchId}/export/zip`;
+}
+
+export async function downloadPlaylistBatchZip(batchId: string, title?: string | null): Promise<void> {
+  const url = playlistBatchZipUrl(batchId);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  if (title) {
+    const safeTitle = title.replace(/[\\/*?:"<>|]/g, '').trim();
+    anchor.download = safeTitle.endsWith('.zip') ? safeTitle : `${safeTitle || 'Playlist'} Transcripts.zip`;
+  }
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+}
+
 

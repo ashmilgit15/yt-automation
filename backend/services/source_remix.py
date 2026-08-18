@@ -18,6 +18,7 @@ from backend.services.utils import (
     run_command,
     write_json_file,
 )
+from backend.services.ytdlp_classifier import YOUTUBE_PLAYER_CLIENTS_ARG
 
 
 settings = get_settings()
@@ -64,6 +65,12 @@ class SourceRemixService:
                     "yt-dlp",
                     "--no-playlist",
                     "--no-progress",
+                    "--extractor-args",
+                    YOUTUBE_PLAYER_CLIENTS_ARG,
+                    "--remote-components",
+                    "ejs:github",
+                    "--no-check-certificates",
+                    "--geo-bypass",
                     "--merge-output-format",
                     "mp4",
                     "-f",
@@ -349,7 +356,18 @@ class SourceRemixService:
 
         def _request() -> list[dict[str, Any]]:
             result = run_command(
-                ["yt-dlp", "--dump-single-json", "--no-warnings", search_query]
+                [
+                    "yt-dlp",
+                    "--dump-single-json",
+                    "--no-warnings",
+                    "--extractor-args",
+                    YOUTUBE_PLAYER_CLIENTS_ARG,
+                    "--remote-components",
+                    "ejs:github",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    search_query,
+                ]
             )
             payload = json.loads(result.stdout)
             entries = payload.get("entries") or []
@@ -381,6 +399,12 @@ class SourceRemixService:
                     "--dump-single-json",
                     "--no-warnings",
                     "--skip-download",
+                    "--extractor-args",
+                    YOUTUBE_PLAYER_CLIENTS_ARG,
+                    "--remote-components",
+                    "ejs:github",
+                    "--no-check-certificates",
+                    "--geo-bypass",
                     url,
                 ]
             )

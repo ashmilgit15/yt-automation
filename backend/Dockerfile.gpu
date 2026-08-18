@@ -9,12 +9,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv ffmpeg fonts-dejavu-core gcc nodejs \
+    && apt-get install -y --no-install-recommends software-properties-common curl unzip ffmpeg fonts-dejavu-core gcc nodejs \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3.11 python3.11-venv python3.11-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/bin/python3 /usr/local/bin/python
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && curl -fsSL https://bootstrap.pypa.io/get-pip.py | python3.11 \
+    && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
 COPY backend/requirements.txt /tmp/requirements.txt
-RUN python -m pip install --upgrade pip && python -m pip install -r /tmp/requirements.txt
+RUN python3.11 -m pip install --upgrade pip && python3.11 -m pip install -r /tmp/requirements.txt
 
 COPY backend /app/backend
 RUN mkdir -p /app/backend/storage/jobs /app/backend/assets /app/secrets

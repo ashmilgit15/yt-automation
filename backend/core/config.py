@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     firecrawl_api_key: str | None = Field(default=None)
     firecrawl_base_url: str = Field(default="https://api.firecrawl.dev")
     groq_api_key: str | None = Field(default=None)
+    groq_api_keys: str | None = Field(default=None)
     groq_whisper_model: str = Field(default="whisper-large-v3-turbo")
     pexels_api_key: str | None = Field(default=None)
 
@@ -99,6 +100,17 @@ class Settings(BaseSettings):
 
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    def get_groq_api_keys(self) -> list[str]:
+        keys: list[str] = []
+        if self.groq_api_keys:
+            keys.extend([k.strip() for k in self.groq_api_keys.split(",") if k.strip()])
+        if self.groq_api_key:
+            for k in self.groq_api_key.split(","):
+                k_clean = k.strip()
+                if k_clean and k_clean not in keys:
+                    keys.append(k_clean)
+        return keys
 
 
 

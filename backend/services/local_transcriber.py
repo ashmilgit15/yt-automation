@@ -7,7 +7,14 @@ from typing import Any, Callable
 
 from backend.core.config import get_settings
 from backend.services.subtitles import write_transcript_artifacts
-from backend.services.utils import ffprobe_duration, get_job_directory
+from backend.services.utils import ffprobe_duration, get_job_directory, verify_audio_file
+from backend.services.ytdlp_classifier import (
+    FailureType,
+    PermanentExtractionError,
+    TransientExtractionError,
+    YOUTUBE_PLAYER_CLIENTS_ARG,
+    classify_ytdlp_failure,
+)
 
 # Process-level model cache to avoid reloading weights into GPU VRAM on every Celery task
 _CACHED_WHISPER_MODEL: Any = None
@@ -31,12 +38,16 @@ class LocalWhisperService:
             "--no-progress",
             "--restrict-filenames",
             "--extractor-args",
-            "youtube:player_client=android,web",
+            YOUTUBE_PLAYER_CLIENTS_ARG,
+            "--remote-components",
+            "ejs:github",
             "--no-check-certificates",
             "--geo-bypass",
             "--extract-audio",
             "--audio-format",
             "mp3",
+            "--downloader-args",
+            "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
             "--output",
             output_template,
             video_url,
@@ -50,10 +61,38 @@ class LocalWhisperService:
             if mp3_files:
                 audio_path = mp3_files[0]
             else:
-                message = (
+                raw_err = (
                     result.stderr or result.stdout or "yt-dlp did not create an audio file."
                 ).strip()
-                raise RuntimeError(f"Audio acquisition failed: {message[-900:]}")
+                classification = classify_ytdlp_failure(raw_err)
+                if not classification.is_retryable:
+                    raise PermanentExtractionError(
+                        f"Audio acquisition failed: {classification.user_message}. {raw_err[-500:]}",
+                        failure_type=classification.failure_type,
+                        user_message=classification.user_message,
+                        technical_detail=raw_err[-500:],
+                    )
+                raise TransientExtractionError(
+                    f"Audio acquisition failed (transient): {raw_err[-500:]}",
+                    failure_type=classification.failure_type,
+                    user_message=classification.user_message,
+                    technical_detail=raw_err[-500:],
+                )
+
+        # Multi-stage audio validation: size, stream presence, and duration
+        is_valid, reason = verify_audio_file(audio_path, min_size=10_000, min_duration=0.5)
+        if not is_valid:
+            audio_path.unlink(missing_ok=True)
+            raw_err = (result.stderr or "").strip()
+            classification = classify_ytdlp_failure(raw_err or reason)
+            fail_type = classification.failure_type if classification.failure_type != FailureType.UNKNOWN_TRANSIENT else FailureType.CORRUPT_AUDIO
+            raise PermanentExtractionError(
+                f"Audio acquisition produced an invalid/corrupt audio file ({reason}). "
+                f"yt-dlp stderr: {raw_err[-400:] or 'no stderr'}",
+                failure_type=fail_type,
+                user_message=f"Invalid audio stream ({reason})",
+                technical_detail=raw_err[-400:] or reason,
+            )
         return audio_path
 
     def _get_or_create_model(self) -> Any:
@@ -78,8 +117,8 @@ class LocalWhisperService:
                 model_name,
                 device=device,
                 compute_type=compute_type,
-                cpu_threads=4,
-                num_workers=2,
+                cpu_threads=2,
+                num_workers=1,
             )
         except Exception:
             # Fallback to int8 on CPU if CUDA is unavailable
@@ -87,8 +126,8 @@ class LocalWhisperService:
                 model_name,
                 device="cpu",
                 compute_type="int8",
-                cpu_threads=4,
-                num_workers=2,
+                cpu_threads=2,
+                num_workers=1,
             )
 
         _CACHED_WHISPER_MODEL = model
@@ -169,6 +208,9 @@ class LocalWhisperService:
                 "duration_seconds": total_duration,
             },
         )
+
+        import gc
+        gc.collect()
 
         return {
             "language": detected_lang,

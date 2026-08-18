@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from backend.core.config import get_settings
+from backend.services.ytdlp_classifier import YOUTUBE_PLAYER_CLIENTS_ARG
 
 
 class YouTubePlaylistService:
@@ -25,7 +26,9 @@ class YouTubePlaylistService:
             "--flat-playlist",
             "--dump-single-json",
             "--extractor-args",
-            "youtube:player_client=android,web",
+            YOUTUBE_PLAYER_CLIENTS_ARG,
+            "--remote-components",
+            "ejs:github",
             "--no-check-certificates",
             "--geo-bypass",
             "--playlist-end",

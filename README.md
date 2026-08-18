@@ -119,15 +119,15 @@ FRONTEND_ORIGIN=http://localhost:3000
 BACKEND_PUBLIC_URL=http://localhost:8000
 
 # Operator Credentials (for UI access)
-SESSION_SECRET=ashmil2010
+SESSION_SECRET=ashmil123
 OPERATOR_USERNAME=operator
-OPERATOR_PASSWORD=ashmil2010
+OPERATOR_PASSWORD=ashmil123
 
 # Database & Queue
 POSTGRES_DB=video_factory
 POSTGRES_USER=video_factory
-POSTGRES_PASSWORD=ashmil2010
-DATABASE_URL=postgresql+psycopg://video_factory:ashmil2010@postgres:5432/video_factory
+POSTGRES_PASSWORD=ashmil123
+DATABASE_URL=postgresql+psycopg://video_factory:ashmil123@postgres:5432/video_factory
 REDIS_URL=redis://redis:6379/0
 
 # AI Models & Agents
@@ -167,7 +167,7 @@ Once started, open your browser:
 
 Log in with:
 - **Username**: `operator` (or whatever you set in `OPERATOR_USERNAME`)
-- **Password**: `ashmil2010` (or whatever you set in `OPERATOR_PASSWORD`)
+- **Password**: `ashmil123` (or whatever you set in `OPERATOR_PASSWORD`)
 
 ---
 

@@ -57,6 +57,14 @@ class PlaylistBatch(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
+    @property
+    def master_summary(self) -> str | None:
+        return self.batch_summary_markdown
+
+    @master_summary.setter
+    def master_summary(self, value: str | None) -> None:
+        self.batch_summary_markdown = value
+
 
 class TranscriptJob(Base):
     __tablename__ = "transcript_jobs"
@@ -93,6 +101,8 @@ class TranscriptJob(Base):
     summary_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     artifact_paths: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
     error_log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)

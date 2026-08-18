@@ -24,6 +24,7 @@ from backend.models.transcription_schemas import (
     PlaylistBatchSummaryRead,
     PlaylistCreateRequest,
     PlaylistVideoRead,
+    SingleVideoCreateRequest,
     TranscriptJobRead,
 )
 from backend.services.youtube_playlist import YouTubePlaylistService
@@ -61,6 +62,8 @@ def _job_read(job: TranscriptJob, *, include_transcript: bool = True) -> Transcr
         summary_json=job.summary_json if include_transcript else None,
         summary_markdown=job.summary_markdown if include_transcript else None,
         error_summary=(job.error_log or "")[-300:] or None,
+        failure_type=job.failure_type,
+        is_retryable=job.is_retryable if job.is_retryable is not None else True,
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
@@ -420,6 +423,44 @@ def cancel_playlist_batch(
     return _batch_read(batch, jobs)
 
 
+@router.post("/playlists/{batch_id}/retry-failed", response_model=PlaylistBatchRead, status_code=status.HTTP_202_ACCEPTED)
+def retry_failed_playlist_batch_items(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+) -> PlaylistBatchRead:
+    """Retries transient failed video transcription jobs in the playlist batch, skipping permanent failures."""
+    batch, jobs = _load_batch(db, batch_id)
+    failed_jobs = [job for job in jobs if job.status == TranscriptStatus.FAILED]
+
+    if not failed_jobs:
+        return _batch_read(batch, jobs)
+
+    retryable_jobs = [job for job in failed_jobs if job.is_retryable is not False]
+    if not retryable_jobs:
+        # All failed jobs are permanent non-retryable errors (e.g. DRM, unavailable)
+        return _batch_read(batch, jobs)
+
+    batch.status = PlaylistStatus.PROCESSING
+    batch.failed_videos = max(0, batch.failed_videos - len(retryable_jobs))
+
+    for job in retryable_jobs:
+        job.status = TranscriptStatus.PENDING
+        job.progress = 0
+        job.stage_detail = "Queued for retry..."
+        job.failure_type = None
+        job.is_retryable = True
+        job.error_log = None
+        db.add(job)
+        transcribe_playlist_item.delay(str(job.id))
+
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return _batch_read(batch, jobs)
+
+
+
 # --- ON-DEMAND AI AGENT ENDPOINTS ---
 
 @router.post("/transcripts/{job_id}/run-cleaner", response_model=TranscriptJobRead, status_code=status.HTTP_202_ACCEPTED)
@@ -473,6 +514,8 @@ def retry_transcript_job(
     job.status = TranscriptStatus.PENDING
     job.progress = 0
     job.stage_detail = "Queued for retry..."
+    job.failure_type = None
+    job.is_retryable = True
     job.error_log = None
     db.commit()
     db.refresh(job)
@@ -538,6 +581,193 @@ def export_transcript(
         media_type=media_types[export_format],
         filename=f"{job.video_id}.{export_format}",
         headers={"Content-Disposition": f'attachment; filename="{job.video_id}.{export_format}"'},
+    )
+
+
+@router.get("/playlists/{batch_id}/export/zip")
+def export_playlist_zip(
+    batch_id: UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_operator),
+    __: None = Depends(rate_limit("playlist-export-zip", 30, 60)),
+) -> Response:
+    """Packages all completed transcripts in the playlist batch into a zip archive with clean titles."""
+    import io
+    import re
+    import unicodedata
+    import urllib.parse
+    import zipfile
+    from backend.services.subtitles import build_srt, build_vtt
+
+    batch, jobs = _load_batch(db, batch_id)
+
+    def _sanitize(text: str) -> str:
+        s = re.sub(r'[\x00-\x1f\x7f\\/*?:"<>|]', "", text or "")
+        s = re.sub(r"\s+", " ", s).strip(". ")
+        s = s[:90].rstrip(". ")
+        return s if s else "video"
+
+    def _has_job_content(j: TranscriptJob) -> bool:
+        if (
+            (j.transcript_text and j.transcript_text.strip())
+            or (j.clean_transcript_text and j.clean_transcript_text.strip())
+            or (j.summary_markdown and j.summary_markdown.strip())
+            or (j.segments_json and len(j.segments_json) > 0)
+            or (j.clean_segments_json and len(j.clean_segments_json) > 0)
+        ):
+            return True
+        if j.artifact_paths:
+            for key in ("txt", "clean_txt", "summary_md", "srt", "vtt"):
+                p = j.artifact_paths.get(key)
+                if p and Path(p).is_file():
+                    return True
+        return False
+
+    completed_jobs = [j for j in jobs if _has_job_content(j)]
+
+    if not completed_jobs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No completed transcripts available to export",
+        )
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Master summary if available
+        master_summary = batch.master_summary or batch.batch_summary_markdown
+        if master_summary and master_summary.strip():
+            zf.writestr(
+                "00_MASTER_PLAYLIST_SUMMARY.md",
+                (master_summary.strip() + "\n").encode("utf-8"),
+            )
+
+        used_bases: set[str] = set()
+        for idx, job in enumerate(jobs):
+            if not _has_job_content(job):
+                continue
+
+            pos_num = (job.position + 1) if (job.position is not None and job.position >= 0) else (idx + 1)
+            safe_title = _sanitize(job.title or job.video_id)
+            base_candidate = f"{pos_num:02d} - {safe_title}"
+            file_base = base_candidate
+            if file_base in used_bases:
+                file_base = f"{base_candidate}_{str(job.video_id)[:8]}"
+            used_bases.add(file_base)
+
+            # 1. Clean Transcript text (if AI cleanup was enabled / clean transcript exists)
+            clean_text = job.clean_transcript_text
+            if not (clean_text and clean_text.strip()) and job.artifact_paths and job.artifact_paths.get("clean_txt"):
+                art_p = Path(job.artifact_paths["clean_txt"])
+                if art_p.is_file():
+                    try:
+                        clean_text = art_p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+            if clean_text and clean_text.strip():
+                zf.writestr(
+                    f"Clean_Transcripts/{file_base} (Clean).txt",
+                    (clean_text.strip() + "\n").encode("utf-8"),
+                )
+
+            # 2. Main / Raw Transcript text
+            raw_text = job.transcript_text
+            if not (raw_text and raw_text.strip()) and job.artifact_paths and job.artifact_paths.get("txt"):
+                art_p = Path(job.artifact_paths["txt"])
+                if art_p.is_file():
+                    try:
+                        raw_text = art_p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+            if not (raw_text and raw_text.strip()) and job.segments_json:
+                seg_texts = [
+                    s.get("text", "").strip()
+                    for s in job.segments_json
+                    if isinstance(s, dict) and s.get("text")
+                ]
+                if seg_texts:
+                    raw_text = " ".join(seg_texts)
+            if raw_text and raw_text.strip():
+                zf.writestr(
+                    f"Transcripts/{file_base}.txt",
+                    (raw_text.strip() + "\n").encode("utf-8"),
+                )
+
+            # 3. AI Summary Markdown (if AI summarization was enabled / summary exists)
+            sum_text = job.summary_markdown
+            if not (sum_text and sum_text.strip()) and job.artifact_paths and job.artifact_paths.get("summary_md"):
+                art_p = Path(job.artifact_paths["summary_md"])
+                if art_p.is_file():
+                    try:
+                        sum_text = art_p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+            if sum_text and sum_text.strip():
+                zf.writestr(
+                    f"Summaries/{file_base} - Summary.md",
+                    (sum_text.strip() + "\n").encode("utf-8"),
+                )
+
+            # 4. Subtitles SRT (.srt)
+            srt_bytes: bytes | None = None
+            if job.artifact_paths and job.artifact_paths.get("srt"):
+                art_path = Path(job.artifact_paths["srt"])
+                if art_path.is_file():
+                    try:
+                        srt_bytes = art_path.read_bytes()
+                    except Exception:
+                        pass
+            if (not srt_bytes) and (job.clean_segments_json or job.segments_json):
+                segments = job.clean_segments_json or job.segments_json
+                if segments:
+                    try:
+                        srt_content = build_srt(segments).strip()
+                        if srt_content:
+                            srt_bytes = (srt_content + "\n").encode("utf-8")
+                    except Exception:
+                        pass
+            if srt_bytes and srt_bytes.strip():
+                zf.writestr(f"Subtitles_SRT/{file_base}.srt", srt_bytes)
+
+            # 5. Subtitles VTT (.vtt)
+            vtt_bytes: bytes | None = None
+            if job.artifact_paths and job.artifact_paths.get("vtt"):
+                art_path = Path(job.artifact_paths["vtt"])
+                if art_path.is_file():
+                    try:
+                        vtt_bytes = art_path.read_bytes()
+                    except Exception:
+                        pass
+            if (not vtt_bytes) and (job.clean_segments_json or job.segments_json):
+                segments = job.clean_segments_json or job.segments_json
+                if segments:
+                    try:
+                        vtt_content = build_vtt(segments).strip()
+                        if vtt_content and vtt_content != "WEBVTT":
+                            vtt_bytes = (vtt_content + "\n").encode("utf-8")
+                    except Exception:
+                        pass
+            if vtt_bytes and vtt_bytes.strip() and vtt_bytes.strip() != b"WEBVTT":
+                zf.writestr(f"Subtitles_VTT/{file_base}.vtt", vtt_bytes)
+
+    zip_bytes = zip_buffer.getvalue()
+
+    safe_batch_title = _sanitize(batch.title or f"playlist_{batch.playlist_id}")
+    if safe_batch_title == "video" or not safe_batch_title:
+        safe_batch_title = "Playlist"
+
+    ascii_title = unicodedata.normalize("NFKD", safe_batch_title).encode("ascii", "ignore").decode("ascii")
+    ascii_title = re.sub(r'[\x00-\x1f\x7f\\/*?:"<>|]', "", ascii_title).strip(". ") or "Playlist"
+
+    ascii_filename = f"{ascii_title[:80]} Transcripts.zip"
+    encoded_filename = urllib.parse.quote(f"{safe_batch_title} Transcripts.zip")
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}',
+            "Content-Type": "application/zip",
+        },
     )
 
 

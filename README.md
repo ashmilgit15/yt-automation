@@ -1,316 +1,297 @@
-# Bulk YouTube Transcriber
+# 🎬 YouTube Automation & Bulk Multi-Engine AI Transcriber
 
-An authorised-use bulk transcription application with a Next.js dashboard, FastAPI API, Celery workers, Redis queueing, PostgreSQL persistence, and local `faster-whisper` transcription. Paste a playlist URL, select up to 200 videos that you own or are authorised to process, and download TXT, SRT, VTT, or JSON results.
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Next.js](https://img.shields.io/badge/Next.js%2015-000000?style=for-the-badge&logo=nextdotjs&logoColor=white)](https://nextjs.org)
+[![Celery](https://img.shields.io/badge/Celery-37814A?style=for-the-badge&logo=celery&logoColor=white)](https://docs.celeryq.dev)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com)
+[![NVIDIA CUDA](https://img.shields.io/badge/NVIDIA%20CUDA-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
 
-> This project is for videos you own or are otherwise authorised to obtain and process. Playlist metadata and audio acquisition use local `yt-dlp`; the worker is deliberately separate from the website so it can run locally on your own GPU.
+An enterprise-grade, high-throughput bulk YouTube transcription and AI synthesis platform. Transcribe individual videos or entire playlists (up to 200 videos per batch) with local GPU acceleration or cloud engines, refine transcripts with an autonomous **AI Cleanup Agent**, and generate chapter breakdowns and action items with an **AI Executive Summarizer Agent**.
 
-> Runtime secrets are intentionally kept out of Git. Keep `.env` and anything inside `secrets/` local-only.
+---
 
-## Table Of Contents
+## 📑 Table of Contents
 
-- [What This Project Includes](#what-this-project-includes)
-- [Quick Start For Beginners](#quick-start-for-beginners)
-- [Step 1: Clone The Repository](#step-1-clone-the-repository)
-- [Step 2: Create Your Local Environment File](#step-2-create-your-local-environment-file)
-- [Step 3: Add Your Google OAuth File](#step-3-add-your-google-oauth-file)
-- [Step 4: Start The App With Docker](#step-4-start-the-app-with-docker)
-- [Step 5: Sign In And Use The Dashboard](#step-5-sign-in-and-use-the-dashboard)
-- [Environment Variable Guide](#environment-variable-guide)
-- [Project Structure](#project-structure)
-- [Manual Local Development](#manual-local-development)
-- [Troubleshooting](#troubleshooting)
-- [Security Notes](#security-notes)
+- [✨ Key Features](#-key-features)
+- [🏗️ System Architecture](#️-system-architecture)
+- [🚀 Quick Start (Beginner Friendly)](#-quick-start-beginner-friendly)
+  - [1. Prerequisites](#1-prerequisites)
+  - [2. Clone Repository](#2-clone-repository)
+  - [3. Configure Environment (`.env`)](#3-configure-environment-env)
+  - [4. Launch with Docker & GPU](#4-launch-with-docker--gpu)
+  - [5. Access Dashboard](#5-access-dashboard)
+- [⚙️ Transcription Engines](#️-transcription-engines)
+- [🤖 Autonomous AI Agents](#-autonomous-ai-agents)
+- [📥 Export Formats](#-export-formats)
+- [🎮 Dashboard & Controls](#-dashboard--controls)
+- [🔧 Manual Development (Without Docker)](#-manual-development-without-docker)
+- [❓ Troubleshooting & FAQ](#-troubleshooting--faq)
+- [🔒 Security Best Practices](#-security-best-practices)
 
-## Bulk transcription workflow
+---
 
-1. Sign in as the operator.
-2. Paste a YouTube playlist URL and click **Analyse playlist**.
-3. Select the videos you are authorised to process and confirm the attestation.
-4. The worker downloads one audio source at a time, runs local `faster-whisper`, and writes TXT/SRT/VTT/JSON exports.
-5. The dashboard polls live progress and presents exports when each item completes.
+## ✨ Key Features
 
-Playlist analysis and authorised audio acquisition both use local `yt-dlp`, so no API key is required for bulk transcription. No Groq, Gemini, Firecrawl, Pexels, OpenRouter, or YouTube Data API key is required.
+- **⚡ Multi-Engine STT Flexibility**:
+  - **Local GPU Whisper (`faster-whisper-large-v3-turbo-ct2`)**: CTranslate2 INT8 GPU acceleration on your NVIDIA GPU (RTX 3050+), 100% offline, free & private.
+  - **Sarvam AI (Saaras v3)**: State of the art for 23 Indian Indic languages (Hindi, Malayalam, Tamil, Telugu, Kannada, Bengali, etc.) with automatic English translation.
+  - **Groq Cloud Whisper**: Ultra-low-latency transcription on Groq LPUs.
+- **🛡️ Anti-Hallucination & Anti-Drift Engine**:
+  - Configured with `condition_on_previous_text=False` to prevent infinite repetition loops on long videos.
+  - Built-in **Silero Voice Activity Detection (VAD)** strips silent pauses and background music.
+- **🤖 Dual Autonomous AI Agents (Gemini 3.7 Flash via Hack Club AI)**:
+  - **AI Cleanup Agent**: Removes stuttering, filler words (`um`, `uh`, `like`), cleans grammatical errors, and aligns timestamps.
+  - **AI Executive Summarizer**: Produces an Executive Summary, Key Highlights, Action Items, and Clickable Timestamped Chapter Breakdowns (`01:23 - Title: summary`).
+  - **Master Playlist Synthesis**: Combines all playlist videos into an overarching master synthesis document.
+- **🎛️ Interactive Lifecycle Controls**:
+  - **Pause (⏸️)**, **Resume (▶️)**, and **Cancel (⏹️)** individual tasks or entire playlist batches.
+  - **1-Click Delete Cross Marks (✕)** to remove unwanted or failed tasks immediately.
+  - **3-Tab Live Preview Modal**: Switch between *Clean Transcript*, *AI Summary & Chapters*, and *Raw Subtitles*.
+- **💾 7 Export Formats**:
+  - `TXT`, `SRT`, `VTT`, `JSON`, `Clean TXT`, `Summary MD`, and `Summary JSON`.
 
-For an RTX 3050 6GB, start with `WHISPER_MODEL=small`. Run the GPU worker with:
+---
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+## 🏗️ System Architecture
+
+```
+                                  ┌────────────────────────┐
+                                  │   Next.js 15 Frontend  │
+                                  │   (http://localhost:3000)
+                                  └───────────┬────────────┘
+                                              │ REST API / SWR Polling
+                                              ▼
+                                  ┌────────────────────────┐
+                                  │   FastAPI Backend API  │
+                                  │   (http://localhost:8000)
+                                  └─────┬────────────┬─────┘
+                                        │            │
+                         State / Auth   │            │ Task Dispatch
+                                        ▼            ▼
+                   ┌────────────────────────┐    ┌────────────────────────┐
+                   │  PostgreSQL Database   │    │      Redis Broker      │
+                   └────────────────────────┘    └───────────┬────────────┘
+                                                             │
+                                                             ▼
+                                                 ┌────────────────────────┐
+                                                 │  Celery Worker (GPU)   │
+                                                 │  • faster-whisper INT8 │
+                                                 │  • Sarvam STT Engine   │
+                                                 │  • Groq Whisper STT    │
+                                                 │  • Gemini 3.7 Agents   │
+                                                 └────────────────────────┘
 ```
 
-## What This Project Includes
+---
 
-- `frontend/`: Next.js 15 playlist-selection and transcript-results dashboard
-- `backend/`: FastAPI API, SQLAlchemy models, Celery workers, local Whisper service, and YouTube playlist metadata service
-- `docker-compose.yml`: local development stack for Postgres, Redis, API, worker, and frontend
-- `secrets/`: local-only folder for Google OAuth files and similar sensitive assets
+## 🚀 Quick Start (Beginner Friendly)
 
-## Quick Start For Beginners
+### 1. Prerequisites
 
-1. Install `Git` and `Docker Desktop`.
-2. Clone this repository.
-3. Copy `.env.example` to `.env`.
-4. Replace every value that starts with `replace-with-`.
-5. Run the GPU-enabled Docker command below.
-6. Open `http://localhost:3000` and sign in with your operator account.
+Make sure you have the following installed on your machine:
+- [Git](https://git-scm.com/)
+- [Docker & Docker Compose](https://docs.docker.com/get-docker/)
+- *(Optional for GPU acceleration)* [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
-The application now refuses to start if important secrets still contain placeholder values. That is intentional.
-
-## Step 1: Clone The Repository
+### 2. Clone Repository
 
 ```bash
 git clone https://github.com/ashmilgit15/yt-automation.git
 cd yt-automation
 ```
 
-<details>
-<summary>Windows PowerShell note</summary>
+### 3. Configure Environment (`.env`)
 
-If you already downloaded the project as a ZIP, extract it first and then open PowerShell in the project folder.
-
-</details>
-
-## Step 2: Create Your Local Environment File
-
-Create a real `.env` file from the example template:
+Copy the template `.env.example` to `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-PowerShell alternative:
+Open `.env` in your code editor and verify/adjust the keys:
 
-```powershell
-Copy-Item .env.example .env
+```env
+# Application & Security
+APP_ENV=development
+DEBUG=true
+API_V1_PREFIX=/api/v1
+FRONTEND_ORIGIN=http://localhost:3000
+BACKEND_PUBLIC_URL=http://localhost:8000
+
+# Operator Credentials (for UI access)
+SESSION_SECRET=ashmil2010
+OPERATOR_USERNAME=operator
+OPERATOR_PASSWORD=ashmil2010
+
+# Database & Queue
+POSTGRES_DB=video_factory
+POSTGRES_USER=video_factory
+POSTGRES_PASSWORD=ashmil2010
+DATABASE_URL=postgresql+psycopg://video_factory:ashmil2010@postgres:5432/video_factory
+REDIS_URL=redis://redis:6379/0
+
+# AI Models & Agents
+HACKCLUB_API_KEY=your_hackclub_api_key_here
+HACKCLUB_BASE_URL=https://ai.hackclub.com/proxy/v1
+HACKCLUB_MODEL=google/gemini-3.7-flash
+
+# Cloud STT (Optional)
+SARVAM_API_KEY=your_sarvam_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
+
+# Local Faster-Whisper GPU Settings
+WHISPER_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
+WHISPER_DEVICE=auto
+WHISPER_COMPUTE_TYPE=int8_float16
 ```
 
-Open `.env` and replace every placeholder value.
+### 4. Launch with Docker & GPU
 
-Minimum values you must change before startup:
-
-- `POSTGRES_PASSWORD`
-- `DATABASE_URL`
-- `SESSION_SECRET`
-- `OPERATOR_PASSWORD`
-
-Helpful secret generation examples:
+Start all services (Postgres, Redis, Backend API, GPU Celery Worker, Next.js Frontend) with one command:
 
 ```bash
-openssl rand -hex 32
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-```powershell
-[guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
-```
+> 💡 *If you are running on CPU without an NVIDIA GPU, omit the `-f docker-compose.gpu.yml` flag:*
+> ```bash
+> docker compose up -d
+> ```
 
-Important:
+### 5. Access Dashboard
 
-- Keep the password inside `DATABASE_URL` the same as `POSTGRES_PASSWORD`.
-- Do not commit `.env`.
-- `.env` is already ignored by Git.
+Once started, open your browser:
+- 🌐 **Web Dashboard**: [http://localhost:3000](http://localhost:3000)
+- 🔌 **Swagger API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- 🩺 **Health Check**: [http://localhost:8000/health](http://localhost:8000/health)
 
-## Step 3: Start The App With Docker
+Log in with:
+- **Username**: `operator` (or whatever you set in `OPERATOR_USERNAME`)
+- **Password**: `ashmil2010` (or whatever you set in `OPERATOR_PASSWORD`)
 
-From the project root, run:
+---
 
+## ⚙️ Transcription Engines
+
+| Engine | Best For | Hardware Requirements | Features |
+| :--- | :--- | :--- | :--- |
+| **Local Faster-Whisper (Large v3 Turbo)** | English & Global Languages | NVIDIA GPU (RTX 3050 6GB recommended) | 100% Free, Private, Zero Rate Limits, VAD Anti-Hallucination |
+| **Sarvam AI (Saaras v3)** | Indic Languages (Hindi, Malayalam, Tamil, etc.) | Cloud API | Word-level timestamps, auto-translate to English |
+| **Groq Cloud Whisper** | High-speed Cloud Batching | Cloud API | Whisper Large v3 Turbo on Groq LPUs |
+
+---
+
+## 🤖 Autonomous AI Agents
+
+### 1. AI Transcript Cleanup Agent
+- **Purpose**: Cleans raw speech into publication-grade transcripts.
+- **Features**:
+  - Removes stuttering, verbal tics, and filler words (`um`, `uh`, `like`, `you know`).
+  - Eliminates infinite repetition loops from background audio or silence.
+  - Corrects punctuation, capitalization, and grammar while preserving original timestamps.
+
+### 2. AI Executive Summarizer Agent
+- **Purpose**: Generates high-level structured executive overviews.
+- **Features**:
+  - **Executive Summary**: Comprehensive paragraph summarizing the core narrative.
+  - **Key Highlights**: Bullet points of essential concepts.
+  - **Action Items**: Checklist of actionable takeaways (`- [ ] ...`).
+  - **Chapter Breakdown**: Precise timestamped timecodes (`02:15 - Introduction to Neural Networks: Overview of backpropagation`).
+
+---
+
+## 📥 Export Formats
+
+Click the export buttons directly on completed video cards or in the preview modal:
+
+- 📄 **TXT**: Clean raw transcript text.
+- ⏱️ **SRT**: SubRip subtitle format with timecodes (`00:01:23,456 --> 00:01:27,890`).
+- 🌐 **VTT**: Web Video Text Tracks for web players.
+- 🗄️ **JSON**: Structured segments with word-level timestamps.
+- ✨ **Clean TXT**: Post-processed text from the AI Cleanup Agent.
+- 📑 **Summary MD**: Full formatted Markdown report with chapters, action items, and quotes.
+
+---
+
+## 🎮 Dashboard & Controls
+
+1. **Direct Single Video Mode**:
+   - Paste any direct YouTube URL (`https://www.youtube.com/watch?v=...`) to transcribe instantly.
+2. **Playlist Batch Mode**:
+   - Paste any YouTube Playlist URL (`https://www.youtube.com/playlist?list=...`), click **Analyse Playlist**, and select/deselect videos.
+3. **Task Controls**:
+   - **Pause (⏸️)**: Temporarily halts a queued task.
+   - **Resume (▶️)**: Resumes paused execution.
+   - **Cancel (⏹️)**: Stops processing and releases worker resources.
+   - **Cross Mark (✕)**: Deletes the task, removes artifacts from disk, and cleans up the UI.
+   - **Retry (🔄)**: Re-queues a failed task with 1 click.
+
+---
+
+## 🔧 Manual Development (Without Docker)
+
+If you prefer running services directly on your host machine:
+
+### 1. Start PostgreSQL & Redis
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose up -d postgres redis
 ```
 
-First boot can take a while because Docker installs Python packages, Node packages, and FFmpeg.
-
-When everything is healthy, these URLs should work:
-
-- Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:8000`
-- Health check: `http://localhost:8000/health`
-
-## Step 4: Sign In And Use The Dashboard
-
-1. Open `http://localhost:3000`.
-2. Sign in with `OPERATOR_USERNAME` and `OPERATOR_PASSWORD` from `.env`.
-3. Connect YouTube from the dashboard if you configured Google OAuth.
-4. Create or review jobs from the main interface.
-
-## Environment Variable Guide
-
-<details>
-<summary>Core app settings</summary>
-
-- `APP_ENV`: environment name such as `development` or `production`
-- `DEBUG`: enables or disables debug-friendly behavior
-- `API_V1_PREFIX`: API prefix used by the backend
-- `FRONTEND_ORIGIN`: browser origin allowed to call the API
-- `BACKEND_PUBLIC_URL`: public backend URL used in integrations
-- `ALLOWED_HOSTS`: comma-separated allowed hostnames
-
-</details>
-
-<details>
-<summary>Database and queue settings</summary>
-
-- `POSTGRES_DB`: database name used by the Postgres container
-- `POSTGRES_USER`: database username used by the Postgres container
-- `POSTGRES_PASSWORD`: database password used by the Postgres container
-- `DATABASE_URL`: SQLAlchemy connection string used by the backend
-- `REDIS_URL`: Redis connection string used by the backend and Celery
-
-</details>
-
-<details>
-<summary>Authentication and security settings</summary>
-
-- `SESSION_SECRET`: signs session cookies and encrypts stored secrets
-- `OPERATOR_USERNAME`: operator login name
-- `OPERATOR_PASSWORD`: operator login password
-- `MAX_REQUEST_BODY_BYTES`: request size safety limit
-
-</details>
-
-<details>
-<summary>AI and media provider settings</summary>
-
-- `GEMINI_API_KEY`: Google Gemini access key
-- `OPENROUTER_API_KEY`: OpenRouter access key
-- `FIRECRAWL_API_KEY`: Firecrawl access key
-- `GROQ_API_KEY`: Groq access key for transcription
-- `PEXELS_API_KEY`: Pexels access key for stock media
-- `GENERIC_BACKGROUND_MUSIC_PATH`: optional local fallback music file
-
-</details>
-
-<details>
-<summary>YouTube integration settings</summary>
-
-- `YOUTUBE_CLIENT_SECRETS_PATH`: local path to your downloaded OAuth JSON file
-- `YOUTUBE_REFRESH_TOKEN`: optional direct refresh token override
-- `YOUTUBE_PRIVACY_STATUS`: default privacy value for uploads
-- `YOUTUBE_DEFAULT_CATEGORY_ID`: default YouTube category ID
-- `YOUTUBE_CHANNEL_LABEL`: label shown in the app for the connected channel
-
-</details>
-
-## Project Structure
-
-```text
-.
-|-- backend/
-|   |-- api/
-|   |-- core/
-|   |-- models/
-|   |-- services/
-|   `-- worker/
-|-- frontend/
-|   |-- src/app/
-|   |-- src/components/
-|   `-- src/lib/
-|-- docker-compose.yml
-|-- .env.example
-|-- .gitignore
-`-- README.md
-```
-
-## Manual Local Development
-
-Docker is the easiest path. If you want to run services manually, use the steps below.
-
-<details>
-<summary>Backend API</summary>
-
+### 2. Backend & Worker
 ```bash
+cd backend
 python -m venv .venv
-. .venv/bin/activate
-pip install -r backend/requirements.txt
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Terminal 1: Run FastAPI API
 uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
-```
 
-Windows PowerShell activation:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-</details>
-
-<details>
-<summary>Celery worker</summary>
-
-```bash
+# Terminal 2: Run Celery GPU Worker
 celery -A backend.worker.celery_app.celery_app worker --loglevel=info --queues=video-jobs
 ```
 
-</details>
-
-<details>
-<summary>Frontend</summary>
-
+### 3. Frontend
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-</details>
+---
 
-<details>
-<summary>Services you still need in manual mode</summary>
+## ❓ Troubleshooting & FAQ
 
-You still need PostgreSQL and Redis running somewhere reachable by `DATABASE_URL` and `REDIS_URL`. Using Docker just for those two services is usually the simplest choice.
+### Q1: `CUDA out of memory` during local transcription?
+> **Fix**: In your `.env`, ensure `WHISPER_COMPUTE_TYPE=int8_float16` is set. This keeps the VRAM usage under 1.8 GB for `large-v3-turbo`, fitting comfortably on 6GB GPUs like the RTX 3050.
 
-</details>
+### Q2: How do I install NVIDIA Docker Toolkit on Linux?
+> **Arch / CachyOS**:
+> ```bash
+> sudo pacman -S nvidia-container-toolkit libnvidia-container
+> sudo nvidia-ctk runtime configure --runtime=docker
+> sudo systemctl restart docker
+> ```
+> **Ubuntu / Debian**:
+> ```bash
+> sudo apt-get install -y nvidia-container-toolkit
+> sudo nvidia-ctk runtime configure --runtime=docker
+> sudo systemctl restart docker
+> ```
 
-## Troubleshooting
+### Q3: `429 Too Many Requests` on Sarvam AI?
+> **Fix**: The backend has built-in exponential backoff and throttled submission workers. If rate limits persist, reduce concurrent playlist items or switch to the Local Faster-Whisper engine.
 
-<details>
-<summary>The app refuses to start because of placeholder secrets</summary>
+---
 
-Open `.env` and replace any value that still contains text like `replace-with-` or `change-me`.
+## 🔒 Security Best Practices
 
-</details>
+- **Never commit `.env`**: `.env` is listed in `.gitignore` and contains sensitive API keys.
+- **Never commit `secrets/`**: OAuth credentials and client secrets are kept strictly local.
+- **Operator Authentication**: Sessions are signed with HMAC-SHA256 using `SESSION_SECRET`.
 
-<details>
-<summary>Docker says a port is already in use</summary>
+---
 
-Stop the program already using the port or change the published port mapping in `docker-compose.yml`.
+## 📜 License
 
-</details>
-
-<details>
-<summary>YouTube OAuth fails</summary>
-
-Check these values carefully:
-
-- Redirect URI: `http://localhost:8000/api/v1/integrations/youtube/oauth/callback`
-- JavaScript origin: `http://localhost:3000`
-- Local file path: `secrets/client_secrets.json`
-
-</details>
-
-<details>
-<summary>Frontend cannot reach the backend</summary>
-
-Check `NEXT_PUBLIC_API_BASE_URL` in `.env` and make sure the backend container is healthy.
-
-</details>
-
-## Security Notes
-
-- `.env` is ignored by Git.
-- `secrets/` is ignored by Git.
-- `secrets/` is also excluded from Docker build context.
-- The backend now blocks startup when placeholder values are still being used for core secrets.
-- Do not store API keys, refresh tokens, or OAuth JSON directly in source code.
-
-## Useful Commands
-
-```bash
-docker compose up --build
-docker compose down
-docker compose logs -f backend-api
-docker compose logs -f celery-worker
-docker compose logs -f frontend
-```
-
-## Validation
-
-- `python -m compileall backend`
-- `npm run build` inside `frontend/`
+Distributed under the MIT License. See `LICENSE` for more information.
